@@ -1,0 +1,47 @@
+direction: down
+
+nas: "NAS (cron every 4 h)" {
+  direction: down
+  lib: "music library\n(MP3 + ID3 tags)" {shape: cylinder}
+  scan: "scan-music-metadata.py\n(mutagen, incremental by mtime)"
+  build: "build-smart-playlist.py\n(one m3u per show)"
+  m3u: "show playlists\n(*.m3u)" {shape: cylinder}
+  lib -> scan
+  build -> m3u
+}
+
+pg: "Postgres" {
+  grid-columns: 1
+  meta: "radio_metadata.tracks" {shape: cylinder}
+  spins: "radio_spins.spins" {shape: cylinder}
+}
+
+radio: "radio host" {
+  direction: down
+  sched: "show-scheduler.sh\n(cron every 5 min)\npicks this hour's show"
+  liq: "Liquidsoap (radio.liq)\nrandom playlist + announcement queue"
+  dj: "dj-announce.sh\nevery 5 tracks\ntemplate text -> Piper TTS -> MP3"
+  log: "log-spin.py\n(on track end)"
+  ice: "Icecast2 :8000\n/stream (not listed)"
+  web: "player + schedule pages\n(installable PWA)"
+  stats: "spin-tracker.py\n(Flask :5000, top 50 / recent / search)"
+
+  sched -> liq: "library.m3u + music.reload\n(plus a show intro)"
+  liq -> dj: "last three tracks"
+  dj -> liq: "queued MP3"
+  liq -> log
+  liq -> ice: "stream"
+  ice -> web
+}
+
+listeners: "listeners\n(browser, phone, media player)" {shape: person}
+
+nas.scan -> pg.meta: "upsert"
+pg.meta -> nas.build: "tracks by genre"
+pg.spins -> nas.build: "recent + 7-day spins"
+nas.m3u -> radio.sched: "NFS (read-only)"
+nas.lib -> radio.liq: "NFS (read-only)"
+radio.log -> pg.spins: "insert play"
+pg.spins -> radio.stats
+radio.ice -> listeners
+radio.web -> listeners

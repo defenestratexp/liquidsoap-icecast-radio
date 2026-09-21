@@ -12,27 +12,7 @@ music. Host names, addresses and credentials are placeholders.
 
 ## Architecture
 
-```
-            NAS (music library, NFS)                         Postgres
-  ┌──────────────────────────────────────┐            ┌──────────────────┐
-  │ cron */4h generate-show-playlists.sh │──upsert──► │ radio_metadata   │
-  │   scan-music-metadata.py (mutagen)   │            │   .tracks        │
-  │   build-smart-playlist.py per show ──┼──read────► │ radio_spins      │
-  │   => /mnt/media/radio-shows/*.m3u    │            │   .spins         │
-  └───────────────┬──────────────────────┘            └────────▲─────────┘
-                  │ NFS (ro): music + show playlists             │ insert
-  ┌───────────────▼──────────────────────────────────────────────┴──────┐
-  │ radio host                                                           │
-  │  cron */5m show-scheduler.sh ─ picks the show for this hour, copies │
-  │     its m3u to library.m3u, telnet "music.reload", renders a TTS    │
-  │     show intro                                                       │
-  │  Liquidsoap radio.liq ─ random playlist + announcement queue        │
-  │     every 5 tracks ─► dj-announce.sh ─► Piper ─► mp3 ─► queue       │
-  │     on_end ─► log-spin.py ─► Postgres; now_playing.json             │
-  │  Icecast2 :8000  /stream  + player.html, schedule.html, PWA files   │
-  │  spin-tracker.py (Flask :5000) ─ top 50 / recent / search           │
-  └──────────────────────────────────────────────────────────────────────┘
-```
+![Architecture: library scan into Postgres, per-show smart playlists, Liquidsoap with Piper DJ breaks into Icecast, play log back to Postgres](docs/diagrams/architecture.png)
 
 ### The DJ
 
