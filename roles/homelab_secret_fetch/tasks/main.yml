@@ -1,0 +1,18 @@
+---
+# Fetch secrets from AWS Secrets Manager
+#
+# Usage:
+#   roles:
+#     - role: homelab_secret_fetch
+#       vars:
+#         secret_name: "homelab/myapp/creds"
+#         secret_var: "myapp_creds"
+#
+# This will set {{ myapp_creds }} as a dict with the secret contents
+
+- name: Fetch secret from AWS Secrets Manager
+  set_fact:
+    "{{ secret_var }}": "{{ lookup('amazon.aws.aws_secret', secret_name, region=aws_region) | from_json }}"
+  vars:
+    aws_region: "{{ aws_secret_region | default('us-west-2') }}"
+  no_log: true

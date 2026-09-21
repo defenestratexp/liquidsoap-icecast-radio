@@ -1,0 +1,5 @@
+inventory.ini
+secrets/**/vault.yml
+playbooks/files/*.png
+*.retry
+__pycache__/

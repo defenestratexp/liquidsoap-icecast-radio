@@ -1,0 +1,433 @@
+---
+- name: Deploy the radio streaming server (Icecast + Liquidsoap)
+  hosts: radio_host
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../secrets/radio/vault.yml
+
+  vars:
+    icecast_port: 8000
+    music_dir: /mounts/media/music
+    nfs_server: "{{ nas_host }}"
+    nfs_export: /mnt/media/music
+    liquidsoap_config_dir: /etc/liquidsoap
+    liquidsoap_log_dir: /var/log/liquidsoap
+    pg_host: "{{ radio_pg_host }}"
+    pg_port: 5432
+
+  roles:
+    - role: homelab_secret_fetch
+      vars:
+        secret_name: "homelab/postgresql/radio"
+        secret_var: "pg_radio_creds"
+
+  tasks:
+    # NFS mount for the music library from the NAS
+    - name: Check if music NFS is already mounted
+      command: mountpoint -q {{ music_dir }}
+      register: music_mounted
+      changed_when: false
+      failed_when: false
+
+    - name: Create NFS mount point
+      file:
+        path: "{{ music_dir }}"
+        state: directory
+        mode: '0755'
+      when: music_mounted.rc != 0
+
+    - name: Add NFS mount to fstab and mount
+      ansible.posix.mount:
+        path: "{{ music_dir }}"
+        src: "{{ nfs_server }}:{{ nfs_export }}"
+        fstype: nfs
+        opts: ro,soft,intr,bg
+        state: mounted
+      when: music_mounted.rc != 0
+
+    # Install debconf-utils for pre-seeding
+    - name: Install debconf-utils
+      apt:
+        name: debconf-utils
+        state: present
+        update_cache: true
+
+    # Pre-seed Icecast2 debconf to prevent interactive prompts
+    - name: Pre-seed Icecast2 debconf values
+      ansible.builtin.debconf:
+        name: icecast2
+        question: "{{ item.question }}"
+        value: "{{ item.value }}"
+        vtype: "{{ item.vtype }}"
+      loop:
+        - { question: "icecast2/icecast-setup", value: "true", vtype: "boolean" }
+        - { question: "icecast2/hostname", value: "{{ icecast_hostname }}", vtype: "string" }
+        - { question: "icecast2/sourcepassword", value: "{{ radio_icecast_source_password }}", vtype: "password" }
+        - { question: "icecast2/relaypassword", value: "{{ radio_icecast_relay_password }}", vtype: "password" }
+        - { question: "icecast2/adminpassword", value: "{{ radio_icecast_admin_password }}", vtype: "password" }
+      no_log: true
+
+    # Install streaming packages
+    - name: Install Icecast2 and Liquidsoap
+      apt:
+        name:
+          - icecast2
+          - liquidsoap
+          - ffmpeg
+          - python3-flask
+          - python3-psycopg2
+        state: present
+
+    # Create directories
+    - name: Create Liquidsoap config directory
+      file:
+        path: "{{ liquidsoap_config_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Create Liquidsoap log directory
+      file:
+        path: "{{ liquidsoap_log_dir }}"
+        state: directory
+        owner: liquidsoap
+        group: liquidsoap
+        mode: '0755'
+
+    # Music directory is an NFS mount from the NAS - created earlier in playbook
+
+    # --- Piper TTS for DJ announcements ---
+    - name: Check if Piper TTS is installed
+      stat:
+        path: /opt/piper/piper
+      register: piper_installed
+
+    - name: Download Piper TTS
+      unarchive:
+        src: https://github.com/rhasspy/piper/releases/download/v1.2.0/piper_amd64.tar.gz
+        dest: /opt
+        remote_src: true
+      when: not piper_installed.stat.exists
+
+    - name: Create symlink for piper-tts
+      file:
+        src: /opt/piper/piper
+        dest: /usr/local/bin/piper-tts
+        state: link
+
+    - name: Create Piper voices directory
+      file:
+        path: /opt/piper/voices
+        state: directory
+        mode: '0755'
+
+    - name: Check if voice model exists
+      stat:
+        path: /opt/piper/voices/en_US-ryan-medium.onnx
+      register: voice_model
+
+    - name: Download Piper voice model
+      get_url:
+        url: "{{ item }}"
+        dest: /opt/piper/voices/
+      loop:
+        - https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/ryan/medium/en_US-ryan-medium.onnx
+        - https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/ryan/medium/en_US-ryan-medium.onnx.json
+      when: not voice_model.stat.exists
+
+    # --- DJ Voice Models ---
+    - name: Check which DJ voice models need downloading
+      stat:
+        path: "/opt/piper/voices/en_US-{{ item.voice }}-{{ item.quality }}.onnx"
+      loop:
+        - { voice: "john", quality: "medium" }
+        - { voice: "amy", quality: "medium" }
+        - { voice: "joe", quality: "medium" }
+        - { voice: "danny", quality: "low" }
+        - { voice: "kathleen", quality: "low" }
+        - { voice: "bryce", quality: "medium" }
+        - { voice: "sam", quality: "medium" }
+        - { voice: "kristin", quality: "medium" }
+        - { voice: "norman", quality: "medium" }
+        - { voice: "lessac", quality: "medium" }
+        - { voice: "hfc_male", quality: "medium" }
+        - { voice: "l2arctic", quality: "medium" }
+      register: voice_checks
+
+    - name: Download missing DJ voice models
+      get_url:
+        url: "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/{{ item.item.voice }}/{{ item.item.quality }}/en_US-{{ item.item.voice }}-{{ item.item.quality }}.onnx{{ ext }}"
+        dest: "/opt/piper/voices/en_US-{{ item.item.voice }}-{{ item.item.quality }}.onnx{{ ext }}"
+      loop: "{{ voice_checks.results }}"
+      loop_control:
+        label: "{{ item.item.voice }}-{{ item.item.quality }}"
+      vars:
+        ext: ""
+      when: not item.stat.exists
+
+    - name: Download missing DJ voice model configs
+      get_url:
+        url: "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/{{ item.item.voice }}/{{ item.item.quality }}/en_US-{{ item.item.voice }}-{{ item.item.quality }}.onnx.json"
+        dest: "/opt/piper/voices/en_US-{{ item.item.voice }}-{{ item.item.quality }}.onnx.json"
+      loop: "{{ voice_checks.results }}"
+      loop_control:
+        label: "{{ item.item.voice }}-{{ item.item.quality }}"
+      when: not item.stat.exists
+
+    - name: Create radio scripts directory
+      file:
+        path: /opt/radio
+        state: directory
+        owner: liquidsoap
+        group: liquidsoap
+        mode: '0755'
+
+    - name: Create DJ temp directory
+      file:
+        path: /tmp/radio-dj
+        state: directory
+        owner: liquidsoap
+        group: liquidsoap
+        mode: '0755'
+
+    - name: Deploy DJ config script
+      template:
+        src: templates/dj-config.sh.j2
+        dest: /opt/radio/dj-config.sh
+        owner: liquidsoap
+        group: liquidsoap
+        mode: '0755'
+
+    - name: Deploy DJ announcement script
+      template:
+        src: templates/dj-announce.sh.j2
+        dest: /opt/radio/dj-announce.sh
+        owner: liquidsoap
+        group: liquidsoap
+        mode: '0755'
+      notify: restart liquidsoap
+
+    - name: Deploy show schedule page
+      template:
+        src: templates/radio-schedule.html.j2
+        dest: /usr/share/icecast2/web/schedule.html
+        owner: icecast2
+        group: icecast
+        mode: '0644'
+
+    # --- Spin Tracker (Postgres-backed) ---
+    - name: Create /etc/radio directory
+      file:
+        path: /etc/radio
+        state: directory
+        owner: root
+        group: liquidsoap
+        mode: '0750'
+
+    - name: Deploy Postgres password file
+      copy:
+        content: "{{ pg_radio_creds.password }}"
+        dest: /etc/radio/db-password
+        owner: root
+        group: liquidsoap
+        mode: '0640'
+      no_log: true
+
+    - name: Deploy log-spin script
+      template:
+        src: templates/log-spin.py.j2
+        dest: /opt/radio/log-spin.py
+        owner: liquidsoap
+        group: liquidsoap
+        mode: '0755'
+      notify: restart liquidsoap
+
+    - name: Deploy spin-tracker web app
+      template:
+        src: templates/spin-tracker.py.j2
+        dest: /opt/radio/spin-tracker.py
+        owner: liquidsoap
+        group: liquidsoap
+        mode: '0755'
+      notify: restart spin-tracker
+
+    - name: Deploy spin-tracker systemd service
+      template:
+        src: templates/spin-tracker.service.j2
+        dest: /etc/systemd/system/spin-tracker.service
+        owner: root
+        group: root
+        mode: '0644'
+      notify:
+        - daemon-reload
+        - restart spin-tracker
+
+    # Deploy web player page
+    - name: Deploy radio web player
+      template:
+        src: templates/radio-player.html.j2
+        dest: /usr/share/icecast2/web/player.html
+        owner: icecast2
+        group: icecast
+        mode: '0644'
+
+    - name: Deploy PWA manifest
+      template:
+        src: templates/radio-manifest.json.j2
+        dest: /usr/share/icecast2/web/manifest.json
+        owner: icecast2
+        group: icecast
+        mode: '0644'
+
+    - name: Deploy PWA service worker
+      template:
+        src: templates/radio-sw.js.j2
+        dest: /usr/share/icecast2/web/sw.js
+        owner: icecast2
+        group: icecast
+        mode: '0644'
+
+    # Icons are not shipped in this repo; drop your own PNGs into
+    # playbooks/files/ and they are deployed when present.
+    - name: Deploy PWA icons
+      copy:
+        src: "files/{{ item }}"
+        dest: "/usr/share/icecast2/web/{{ item }}"
+        owner: icecast2
+        group: icecast
+        mode: '0644'
+      loop:
+        - icon-192.png
+        - icon-512.png
+      when: (playbook_dir ~ '/files/' ~ item) is file
+
+    - name: Ensure now_playing.json exists and is writable by liquidsoap
+      file:
+        path: /usr/share/icecast2/web/now_playing.json
+        state: touch
+        owner: liquidsoap
+        group: icecast
+        mode: '0664'
+
+    # M3U playlist is managed by show-scheduler.sh (deployed by radio_shows.yml)
+    # Generate a default fallback m3u only if one doesn't already exist
+    - name: Check if library.m3u exists
+      stat:
+        path: /etc/liquidsoap/library.m3u
+      register: library_m3u
+
+    - name: Generate fallback m3u if none exists
+      shell: find {{ music_dir }} -type f -name "*.mp3" | shuf -n 2000 > /etc/liquidsoap/library.m3u
+      when: not library_m3u.stat.exists or library_m3u.stat.size == 0
+
+    - name: Set m3u permissions
+      file:
+        path: /etc/liquidsoap/library.m3u
+        state: touch
+        owner: liquidsoap
+        group: liquidsoap
+        mode: '0644'
+      changed_when: false
+
+    - name: Remove old m3u cron job (now handled by show scheduler)
+      cron:
+        name: "Regenerate radio library m3u"
+        state: absent
+        user: root
+
+    # Deploy Icecast configuration
+    - name: Deploy Icecast configuration
+      template:
+        src: templates/icecast.xml.j2
+        dest: /etc/icecast2/icecast.xml
+        owner: icecast2
+        group: icecast
+        mode: '0640'
+      notify: restart icecast2
+
+    # Enable Icecast (Ubuntu disables by default)
+    - name: Enable Icecast2 in defaults
+      lineinfile:
+        path: /etc/default/icecast2
+        regexp: '^ENABLE='
+        line: 'ENABLE=true'
+      notify: restart icecast2
+
+    # Deploy Liquidsoap script
+    - name: Deploy Liquidsoap radio script
+      template:
+        src: templates/radio.liq.j2
+        dest: "{{ liquidsoap_config_dir }}/radio.liq"
+        owner: liquidsoap
+        group: liquidsoap
+        mode: '0640'
+      notify: restart liquidsoap
+
+    # Deploy Liquidsoap systemd service
+    - name: Deploy Liquidsoap systemd unit
+      template:
+        src: templates/liquidsoap.service.j2
+        dest: /etc/systemd/system/liquidsoap.service
+        owner: root
+        group: root
+        mode: '0644'
+      notify:
+        - daemon-reload
+        - restart liquidsoap
+
+    # Start services
+    - name: Enable and start Icecast2
+      systemd:
+        name: icecast2
+        state: started
+        enabled: true
+
+    - name: Enable and start Liquidsoap
+      systemd:
+        name: liquidsoap
+        state: started
+        enabled: true
+
+    - name: Enable and start spin-tracker
+      systemd:
+        name: spin-tracker
+        state: started
+        enabled: true
+
+    # Verify
+    - name: Wait for Icecast to be ready
+      wait_for:
+        port: "{{ icecast_port }}"
+        timeout: 30
+
+    - name: Display status
+      debug:
+        msg: |
+          {{ station_name }} deployed successfully!
+          Icecast status: http://{{ icecast_hostname }}:{{ icecast_port }}/
+          Stream URL: http://{{ icecast_hostname }}:{{ icecast_port }}/stream
+          Music directory: {{ music_dir }}
+          Spin Tracker: http://{{ icecast_hostname }}:5000/
+          Add music files and restart liquidsoap to begin streaming.
+
+  handlers:
+    - name: restart icecast2
+      systemd:
+        name: icecast2
+        state: restarted
+
+    - name: restart liquidsoap
+      systemd:
+        name: liquidsoap
+        state: restarted
+
+    - name: restart spin-tracker
+      systemd:
+        name: spin-tracker
+        state: restarted
+
+    - name: daemon-reload
+      systemd:
+        daemon_reload: true

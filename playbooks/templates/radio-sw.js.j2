@@ -1,0 +1,5 @@
+// Radio player service worker - required for PWA install
+// Minimal service worker - just handles fetch passthrough
+self.addEventListener('fetch', function(event) {
+  event.respondWith(fetch(event.request));
+});

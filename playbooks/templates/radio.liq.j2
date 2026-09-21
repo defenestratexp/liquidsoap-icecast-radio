@@ -1,0 +1,178 @@
+#!/usr/bin/liquidsoap
+
+# {{ station_name }} - Liquidsoap stream script
+# Managed by Ansible - do not edit manually
+
+# Log settings
+set("log.file.path", "/var/log/liquidsoap/radio.log")
+set("log.stdout", false)
+set("server.telnet", true)
+set("server.telnet.bind_addr", "127.0.0.1")
+set("server.telnet.port", 1234)
+
+# --- Display history (for web player, never reset) ---
+display_history = ref([])
+now_playing_file = "/usr/share/icecast2/web/now_playing.json"
+
+# Helper: escape double quotes for JSON strings
+def json_esc(s)
+  string.replace(pattern='"', fun(_) -> '\\"', s)
+end
+
+# Helper: write the full now_playing.json
+def write_now_playing(artist, title, album)
+  # Build history JSON array from display_history (most recent first)
+  dh = !display_history
+  len = list.length(dh)
+  hist_json = ref("[]")
+  if len > 0 then
+    entries = ref([])
+    max = if len > 3 then 3 else len end
+    i = ref(0)
+    list.iter(fun(entry) -> begin
+      idx = !i
+      if idx >= (len - max) then
+        entries := list.append([entry], !entries)
+      end
+      i := idx + 1
+    end, dh)
+    parts = list.map(fun(e) -> e, !entries)
+    hist_json := "[" ^ string.concat(separator=",", parts) ^ "]"
+  end
+
+  # Read current show name
+  show = string.trim(process.read("cat /tmp/radio-dj/current_show.txt 2>/dev/null || echo ''"))
+
+  json = '{"artist":"#{json_esc(artist)}","title":"#{json_esc(title)}","album":"#{json_esc(album)}","show":"#{json_esc(show)}","history":#{!hist_json}}'
+  ignore(file.write(data=json, now_playing_file))
+end
+
+# --- DJ Announcement System ---
+history_artists = ref([])
+history_titles = ref([])
+history_albums = ref([])
+song_count = ref(0)
+dj_script = "/opt/radio/dj-announce.sh"
+
+# Announcement queue
+announcements = request.queue(id="announcements")
+
+# Music source
+music = playlist(id="music", mode="random", reload_mode="seconds", reload=300, "/etc/liquidsoap/library.m3u")
+
+# Track the current playing track for JSON refresh
+current_artist = ref("")
+current_title = ref("")
+current_album = ref("")
+
+# Write now_playing.json on each new track (fires at prefetch)
+music = map_metadata(fun(m) -> begin
+  current_artist := m["artist"]
+  current_title := m["title"]
+  current_album := m["album"]
+  thread.run(fun() -> write_now_playing(!current_artist, !current_title, !current_album))
+  m
+end, music)
+
+# Track end callback - updates display history and DJ system
+music = on_end(delay=0., music, fun(dur, m) -> begin
+  artist = m["artist"]
+  title = m["title"]
+  album = m["album"]
+
+  if title != "" then
+    # Log spin to database (includes file path for tracking)
+    filepath = m["filename"]
+    ignore(file.write(data="#{artist}\n#{title}\n#{album}\n#{filepath}\n", "/tmp/radio-dj/last_played.txt"))
+    thread.run(fun() -> begin
+      ignore(process.read("/usr/bin/python3 /opt/radio/log-spin.py"))
+    end)
+
+    # Check for pending show intro (plays after first track of new show)
+    thread.run(fun() -> begin
+      pending = string.trim(process.read("cat /tmp/radio-dj/pending_intro.txt 2>/dev/null"))
+      if pending != "" then
+        log("DJ: playing pending show intro #{pending}")
+        ignore(server.execute("announcements.push #{pending}"))
+        ignore(process.read("rm -f /tmp/radio-dj/pending_intro.txt"))
+      end
+    end)
+
+    # Update display history (keep last 3, stored as JSON objects)
+    entry = '{"artist":"#{json_esc(artist)}","title":"#{json_esc(title)}","album":"#{json_esc(album)}"}'
+    dh = !display_history
+    dh = list.append(dh, [entry])
+    len = list.length(dh)
+    if len > 3 then
+      # Drop oldest entries, keep last 3
+      display_history := list.tl(dh)
+    else
+      display_history := dh
+    end
+
+    # DJ counter
+    ha = !history_artists
+    ht = !history_titles
+    hb = !history_albums
+    history_artists := list.append(ha, [artist])
+    history_titles := list.append(ht, [title])
+    history_albums := list.append(hb, [album])
+    song_count := !song_count + 1
+    log("DJ: finished track #{!song_count}/5 - #{artist} - #{title} [#{album}]")
+
+    if !song_count >= 5 then
+      song_count := 0
+      ha = !history_artists
+      ht = !history_titles
+      hb = !history_albums
+      len = list.length(ht)
+
+      a1 = if len >= 1 then list.nth(default="", ha, len - 1) else "" end
+      t1 = if len >= 1 then list.nth(default="", ht, len - 1) else "" end
+      b1 = if len >= 1 then list.nth(default="", hb, len - 1) else "" end
+      a2 = if len >= 2 then list.nth(default="", ha, len - 2) else "" end
+      t2 = if len >= 2 then list.nth(default="", ht, len - 2) else "" end
+      a3 = if len >= 3 then list.nth(default="", ha, len - 3) else "" end
+      t3 = if len >= 3 then list.nth(default="", ht, len - 3) else "" end
+
+      history_artists := []
+      history_titles := []
+      history_albums := []
+
+      thread.run(fun() -> begin
+        infofile = "/tmp/radio-dj/tracks.txt"
+        ignore(file.write(data="#{a1}\n#{t1}\n#{b1}\n#{a2}\n#{t2}\n#{a3}\n#{t3}\n", infofile))
+        result = process.read("#{dj_script}")
+        clip = string.trim(result)
+        if clip != "" then
+          log("DJ: queuing announcement #{clip}")
+          ignore(server.execute("announcements.push #{clip}"))
+        end
+      end)
+    end
+
+    # Refresh now_playing.json with updated history and next track
+    thread.run(fun() -> write_now_playing(!current_artist, !current_title, !current_album))
+  end
+end)
+
+# Play announcements between songs when available, otherwise music
+radio = fallback(track_sensitive=true, [announcements, music])
+
+# Final fallback to silence
+radio = fallback(track_sensitive=false, [radio, blank()])
+
+# Output to Icecast
+output.icecast(
+  %mp3(bitrate=128),
+  host="localhost",
+  port=8000,
+  password="{{ radio_icecast_source_password }}",
+  mount="/stream",
+  public=false,
+  name="{{ station_name }}",
+  description="{{ station_tagline }}",
+  genre="Various",
+  url="{{ station_url }}",
+  radio
+)

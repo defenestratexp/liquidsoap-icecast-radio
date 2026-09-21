@@ -1,0 +1,18 @@
+---
+# Station identity -- rendered into the Liquidsoap stream metadata, the web
+# player, the schedule page, the spin tracker and the spoken DJ lines.
+station_name: "Homelab Radio"
+station_short_name: "HLR"
+station_tagline: "A personal, non-commercial internet radio station"
+# How the DJ says the station name. Spell out call letters so Piper reads
+# them as letters ("K H L R") rather than trying to pronounce a word.
+station_tts_name: "Homelab Radio"
+station_url: "https://radio.example.com"
+# Sent to the Wikipedia API by the player's artist panel. Wikimedia asks for
+# a descriptive agent with a contact URL or address.
+station_user_agent: "homelab-radio/1.0 (https://radio.example.com; ops@example.com)"
+
+# Hosts
+icecast_hostname: radio.example.internal
+nas_host: nas                        # inventory name of the NFS server
+radio_pg_host: db-host.example.internal

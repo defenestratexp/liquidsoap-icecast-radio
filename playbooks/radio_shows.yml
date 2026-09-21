@@ -1,0 +1,239 @@
+---
+- name: Deploy the radio show scheduling system
+  hosts: radio_host
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../secrets/radio/vault.yml
+
+  vars:
+    music_dir: /mounts/media/music
+    show_playlist_dir: /mounts/media/radio-shows
+    liquidsoap_config_dir: /etc/liquidsoap
+    pg_host: "{{ radio_pg_host }}"
+    pg_port: 5432
+
+  roles:
+    - role: homelab_secret_fetch
+      vars:
+        secret_name: "homelab/postgresql/radio-indexer"
+        secret_var: "pg_indexer_creds"
+
+  tasks:
+    # --- NAS tasks: metadata scan + playlist generation (runs next to the files) ---
+
+    - name: Create radio-shows directory on the NAS
+      delegate_to: "{{ nas_host }}"
+      file:
+        path: /mnt/media/radio-shows
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Ensure /opt/radio exists on the NAS
+      delegate_to: "{{ nas_host }}"
+      file:
+        path: /opt/radio
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Install python3-psycopg2 and python3-mutagen on the NAS
+      delegate_to: "{{ nas_host }}"
+      apt:
+        name:
+          - python3-psycopg2
+          - python3-mutagen
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create /etc/radio directory on the NAS
+      delegate_to: "{{ nas_host }}"
+      file:
+        path: /etc/radio
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Deploy Postgres password file on the NAS
+      delegate_to: "{{ nas_host }}"
+      copy:
+        content: "{{ pg_indexer_creds.password }}"
+        dest: /etc/radio/db-password
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+
+    - name: Deploy generate-show-playlists.sh to the NAS
+      delegate_to: "{{ nas_host }}"
+      template:
+        src: templates/generate-show-playlists.sh.j2
+        dest: /opt/radio/generate-show-playlists.sh
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Deploy smart playlist builder to the NAS
+      delegate_to: "{{ nas_host }}"
+      template:
+        src: templates/build-smart-playlist.py.j2
+        dest: /opt/radio/build-smart-playlist.py
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Deploy metadata scanner to the NAS
+      delegate_to: "{{ nas_host }}"
+      template:
+        src: templates/scan-music-metadata.py.j2
+        dest: /opt/radio/scan-music-metadata.py
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Cron on the NAS - generate playlists every 4 hours
+      delegate_to: "{{ nas_host }}"
+      cron:
+        name: "Radio generate show playlists"
+        hour: "*/4"
+        minute: "15"
+        job: "/opt/radio/generate-show-playlists.sh >> /var/log/radio-playlists.log 2>&1"
+        user: root
+
+    - name: Remove obsolete nightly genre-cache rebuild cron
+      delegate_to: "{{ nas_host }}"
+      cron:
+        name: "Radio rebuild genre cache"
+        state: absent
+        user: root
+
+    - name: Deploy audit-show-playlists.sh to the NAS
+      delegate_to: "{{ nas_host }}"
+      template:
+        src: templates/audit-show-playlists.sh.j2
+        dest: /opt/radio/audit-show-playlists.sh
+        owner: root
+        group: root
+        mode: '0755'
+
+    # --- Radio host tasks: NFS mount for show playlists ---
+
+    - name: Check if radio-shows NFS is already mounted
+      command: mountpoint -q {{ show_playlist_dir }}
+      register: shows_mounted
+      changed_when: false
+      failed_when: false
+
+    - name: Create NFS mount point for radio-shows
+      file:
+        path: "{{ show_playlist_dir }}"
+        state: directory
+        mode: '0755'
+      when: shows_mounted.rc != 0
+
+    - name: Add radio-shows NFS mount to fstab and mount
+      ansible.posix.mount:
+        path: "{{ show_playlist_dir }}"
+        src: "{{ nas_host }}:/mnt/media/radio-shows"
+        fstype: nfs
+        opts: ro,soft,intr,bg
+        state: mounted
+      when: shows_mounted.rc != 0
+
+    # --- Radio host tasks: show scheduler and updated DJ script ---
+
+    - name: Deploy show-scheduler.sh to the radio host
+      template:
+        src: templates/show-scheduler.sh.j2
+        dest: /opt/radio/show-scheduler.sh
+        owner: liquidsoap
+        group: liquidsoap
+        mode: '0755'
+
+    - name: Deploy updated DJ announcement script
+      template:
+        src: templates/dj-announce.sh.j2
+        dest: /opt/radio/dj-announce.sh
+        owner: liquidsoap
+        group: liquidsoap
+        mode: '0755'
+      notify: restart liquidsoap
+
+    - name: Deploy updated Liquidsoap config
+      template:
+        src: templates/radio.liq.j2
+        dest: "{{ liquidsoap_config_dir }}/radio.liq"
+        owner: liquidsoap
+        group: liquidsoap
+        mode: '0640'
+      notify: restart liquidsoap
+
+    - name: Cron on the radio host - run show scheduler every 5 minutes
+      cron:
+        name: "Radio show scheduler"
+        minute: "*/5"
+        job: "/opt/radio/show-scheduler.sh >> /var/log/radio-scheduler.log 2>&1"
+        user: root
+
+    # --- Initial playlist generation ---
+
+    - name: Run initial playlist generation on the NAS
+      delegate_to: "{{ nas_host }}"
+      command: /opt/radio/generate-show-playlists.sh
+      register: initial_gen
+      changed_when: true
+
+    - name: Show playlist generation output
+      debug:
+        msg: "{{ initial_gen.stdout_lines }}"
+      when: initial_gen.stdout_lines is defined
+
+    - name: Audit show playlists for genre mismatches
+      delegate_to: "{{ nas_host }}"
+      command: /opt/radio/audit-show-playlists.sh
+      register: audit_result
+      changed_when: false
+      failed_when: false
+
+    - name: Show audit results
+      debug:
+        msg: "{{ audit_result.stdout_lines }}"
+      when: audit_result.stdout_lines is defined
+
+    - name: Warn if audit found issues
+      debug:
+        msg: "WARNING: Playlist audit found genre mismatches. Review /mnt/media/radio-shows/audit_report.txt on the NAS."
+      when: audit_result.rc != 0
+
+    # --- Run scheduler once to set initial show ---
+
+    - name: Run show scheduler to set initial show
+      command: /opt/radio/show-scheduler.sh
+      register: initial_sched
+      changed_when: true
+
+    - name: Show scheduler output
+      debug:
+        msg: "{{ initial_sched.stdout_lines }}"
+      when: initial_sched.stdout_lines is defined
+
+    - name: Display status
+      debug:
+        msg: |
+          {{ station_name }} show scheduling deployed!
+          Playlist generation: {{ nas_host }}:/opt/radio/generate-show-playlists.sh (every 4 hours)
+          Show scheduler: radio host:/opt/radio/show-scheduler.sh (every 5 minutes)
+          Show playlists: {{ nas_host }}:/mnt/media/radio-shows/ (NFS mounted on the radio host)
+          DJ announces every 5 songs with show name.
+          Liquidsoap reloads playlist every 5 minutes.
+
+  handlers:
+    - name: restart liquidsoap
+      systemd:
+        name: liquidsoap
+        state: restarted

@@ -1,0 +1,105 @@
+#!/bin/bash
+# Radio show playlist auditor
+# Checks each show's m3u for tracks whose genre doesn't match the show
+# Runs on the NAS where ffprobe and the genre cache are available
+# Managed by Ansible - do not edit manually
+
+SHOW_DIR="/mnt/media/radio-shows"
+CACHE_FILE="$SHOW_DIR/.genre-cache.tsv"
+REPORT_FILE="$SHOW_DIR/audit_report.txt"
+
+# Show-to-genre mappings (must match generate-show-playlists.sh)
+declare -A SHOW_GENRES
+SHOW_GENRES[loud_and_clear]="Rock|Hard Rock|Grunge|Alternative|Progressive Rock"
+SHOW_GENRES[the_hook]="Pop"
+SHOW_GENRES[soul_kitchen]="Jazz|Blues|Funk|R&B/Soul|Soul Jazz|Soul and R&B|Soul And R&B"
+SHOW_GENRES[the_cypher]="Hip-Hop|Rap|Rap & Hip-Hop|Rap/Hip-Hop|Hip Hop|Hip-Hop/Rap"
+SHOW_GENRES[roots_and_routes]="Reggae|Folk"
+SHOW_GENRES[backroads]="Country|World"
+SHOW_GENRES[the_pit]="Metal|Hard Rock|Nu-Metal|Heavy Metal"
+SHOW_GENRES[no_rules]="Punk|Punk Rock"
+SHOW_GENRES[signal_and_noise]="Electronic|Trip-Hop|Electronica|Electronica/Dance|Dance|Techno"
+SHOW_GENRES[quiet_hours]="Classical|New Age|Soundtrack|Soundtracks|Lounge|Easy Listening"
+SHOW_GENRES[the_laugh_track]="Comedy"
+SHOW_GENRES[the_industrial_complex]="Industrial"
+SHOW_GENRES[bass_drop]="Dub"
+
+total_issues=0
+
+echo "=== Show Playlist Audit ===" > "$REPORT_FILE"
+echo "Date: $(date)" >> "$REPORT_FILE"
+echo "" >> "$REPORT_FILE"
+
+for m3u in "$SHOW_DIR"/*.m3u; do
+    show_name=$(basename "$m3u" .m3u)
+
+    # Skip default shuffle
+    [ "$show_name" = "default_shuffle" ] && continue
+
+    allowed="${SHOW_GENRES[$show_name]}"
+    if [ -z "$allowed" ]; then
+        echo "SKIP: No genre mapping for $show_name" >> "$REPORT_FILE"
+        continue
+    fi
+
+    issues=0
+    issue_list=""
+
+    while IFS= read -r filepath; do
+        [ -z "$filepath" ] && continue
+
+        # Convert radio-host path back to NAS path for cache lookup
+        nas_path=$(echo "$filepath" | sed 's|/mounts/media/music|/mnt/media/music|')
+
+        # Look up genre in cache first (fast)
+        genre=""
+        if [ -f "$CACHE_FILE" ]; then
+            genre=$(grep -F "$nas_path" "$CACHE_FILE" 2>/dev/null | head -1 | cut -f2)
+        fi
+
+        # Fall back to ffprobe if not in cache
+        if [ -z "$genre" ]; then
+            genre=$(ffprobe -v quiet -show_entries format_tags=genre -of default=noprint_wrappers=1:nokey=1 "$nas_path" 2>/dev/null | head -1)
+        fi
+
+        # Check if genre matches allowed genres for this show
+        if [ -n "$genre" ]; then
+            match=0
+            echo "$genre" | grep -qiE "^($allowed)$" && match=1
+            if [ "$match" -eq 0 ]; then
+                issues=$((issues + 1))
+                # Get artist from path
+                artist=$(echo "$filepath" | sed 's|.*/music/||' | cut -d'/' -f1)
+                issue_list="${issue_list}\n  MISMATCH: $artist - genre '$genre' not in ($allowed)"
+                if [ "$issues" -le 3 ]; then
+                    issue_list="${issue_list}\n    File: $filepath"
+                fi
+            fi
+        fi
+    done < "$m3u"
+
+    track_count=$(wc -l < "$m3u")
+
+    if [ "$issues" -gt 0 ]; then
+        echo "[$show_name] $issues mismatches out of $track_count tracks" >> "$REPORT_FILE"
+        echo -e "$issue_list" >> "$REPORT_FILE"
+        echo "" >> "$REPORT_FILE"
+        total_issues=$((total_issues + issues))
+    else
+        echo "[$show_name] CLEAN - $track_count tracks, all genres match" >> "$REPORT_FILE"
+    fi
+done
+
+echo "" >> "$REPORT_FILE"
+echo "=== Summary ===" >> "$REPORT_FILE"
+echo "Total issues: $total_issues" >> "$REPORT_FILE"
+echo "" >> "$REPORT_FILE"
+
+# Print to stdout too
+cat "$REPORT_FILE"
+
+if [ "$total_issues" -gt 0 ]; then
+    exit 1
+else
+    exit 0
+fi

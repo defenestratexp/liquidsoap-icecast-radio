@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Log a spin (track play) to radio_spins.spins in Postgres.
+
+Called by Liquidsoap on_end callback. Reads track metadata from
+/tmp/radio-dj/last_played.txt and current show from
+/tmp/radio-dj/current_show.txt.
+
+Managed by Ansible - do not edit manually.
+"""
+
+import os
+import sys
+from datetime import datetime
+
+import psycopg2
+
+LAST_PLAYED = "/tmp/radio-dj/last_played.txt"
+CURRENT_SHOW = "/tmp/radio-dj/current_show.txt"
+DB_PASSWORD_FILE = "/etc/radio/db-password"
+
+DB_HOST = "{{ pg_host }}"
+DB_PORT = {{ pg_port }}
+DB_NAME = "radio_spins"
+DB_USER = "radio_app"
+
+
+def load_password():
+    with open(DB_PASSWORD_FILE) as f:
+        return f.read().strip()
+
+
+def main():
+    if not os.path.exists(LAST_PLAYED):
+        print("No last_played.txt found, skipping.", file=sys.stderr)
+        return
+
+    try:
+        with open(LAST_PLAYED) as f:
+            lines = f.read().strip().split("\n")
+    except Exception as e:
+        print(f"Error reading {LAST_PLAYED}: {e}", file=sys.stderr)
+        return
+
+    if len(lines) < 2:
+        print("Incomplete track data in last_played.txt, skipping.", file=sys.stderr)
+        return
+
+    artist = lines[0].strip()
+    title = lines[1].strip()
+    album = lines[2].strip() if len(lines) >= 3 else ""
+    filepath = lines[3].strip() if len(lines) >= 4 else ""
+
+    if not title:
+        print("Empty title, skipping.", file=sys.stderr)
+        return
+
+    show_name = ""
+    if os.path.exists(CURRENT_SHOW):
+        try:
+            with open(CURRENT_SHOW) as f:
+                show_name = f.read().strip()
+        except Exception:
+            pass
+
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            port=DB_PORT,
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=load_password(),
+            connect_timeout=5,
+        )
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO spins (artist, title, album, show_name, filepath, played_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (artist, title, album, show_name, filepath, datetime.now()),
+            )
+        conn.close()
+    except Exception as e:
+        print(f"Error writing spin to Postgres: {e}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""
+Smart playlist builder for the radio show rotations.
+
+Queries radio_metadata.tracks for (filepath, artist, title, album, file_modified)
+filtered by the requested genres (use __ALL__ to match every track) and builds
+an m3u using these rules:
+
+  - Title dedup (same title only once per playlist)
+  - Artist cap (MAX_PER_ARTIST per playlist)
+  - Album cap (MAX_PER_ALBUM per playlist)
+  - Spin-aware sort weighting (less-played tracks surface first; 7-day window)
+  - Hard recency floor (excludes tracks played in the last RECENT_PLAY_HOURS)
+  - New-music boost (tracks added to the library in the last NEW_MUSIC_DAYS
+    get a score bump so they hit rotation soon after import)
+
+Usage: build-smart-playlist.py OUTPUT_FILE COUNT GENRE1 [GENRE2 ...]
+
+Managed by Ansible - do not edit manually.
+"""
+
+import os
+import sys
+import random
+from collections import defaultdict
+from datetime import datetime, timedelta
+
+import psycopg2
+
+MUSIC_DIR = "/mnt/media/music"
+RADIO_MUSIC_DIR = "/mounts/media/music"
+
+# --- Tunables ---
+MAX_PER_ARTIST = 30
+MAX_PER_ALBUM = 5
+SPIN_LOOKBACK_DAYS = 7
+RECENT_PLAY_HOURS = 12        # hard floor — excluded entirely
+NEW_MUSIC_DAYS = 7            # tracks added in last N days get a priority bump
+NEW_MUSIC_BOOST = -2.5        # lower sort key = picked first; same magnitude as the random jitter
+
+DB_PASSWORD_FILE = "/etc/radio/db-password"
+DB_HOST = "{{ pg_host }}"
+DB_PORT = {{ pg_port }}
+DB_USER = "radio_indexer"
+METADATA_DB = "radio_metadata"
+SPINS_DB = "radio_spins"
+
+
+def _load_password():
+    with open(DB_PASSWORD_FILE) as f:
+        return f.read().strip()
+
+
+def _connect(dbname):
+    return psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=dbname,
+        user=DB_USER,
+        password=_load_password(),
+        connect_timeout=5,
+    )
+
+
+def load_tracks(genres):
+    """Return list of (filepath, artist, title, album, file_modified) rows."""
+    conn = _connect(METADATA_DB)
+    try:
+        with conn.cursor() as cur:
+            if len(genres) == 1 and genres[0] == "__ALL__":
+                cur.execute(
+                    "SELECT filepath, artist, title, album, file_modified "
+                    "FROM tracks WHERE filepath <> ''"
+                )
+            else:
+                cur.execute(
+                    "SELECT filepath, artist, title, album, file_modified "
+                    "FROM tracks WHERE LOWER(genre) = ANY(%s)",
+                    ([g.lower() for g in genres],),
+                )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_spin_counts():
+    """Return dict (lower_artist, lower_title) -> spin count over the lookback window."""
+    spins = defaultdict(int)
+    try:
+        cutoff = datetime.now() - timedelta(days=SPIN_LOOKBACK_DAYS)
+        conn = _connect(SPINS_DB)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT LOWER(artist), LOWER(title), COUNT(*) "
+                    "FROM spins WHERE played_at > %s "
+                    "GROUP BY LOWER(artist), LOWER(title)",
+                    (cutoff,),
+                )
+                for artist, title, count in cur.fetchall():
+                    spins[(artist or "", title or "")] = count
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"WARNING: spin weighting disabled ({e})", file=sys.stderr)
+    return spins
+
+
+def get_recent_plays(hours):
+    """Return set of (lower_artist, lower_title) keys played in the last `hours`."""
+    excluded = set()
+    try:
+        cutoff = datetime.now() - timedelta(hours=hours)
+        conn = _connect(SPINS_DB)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT LOWER(artist), LOWER(title) "
+                    "FROM spins WHERE played_at > %s",
+                    (cutoff,),
+                )
+                for artist, title in cur.fetchall():
+                    excluded.add((artist or "", title or ""))
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"WARNING: recency floor disabled ({e})", file=sys.stderr)
+    return excluded
+
+
+def _artist_from_path(filepath):
+    rel = filepath.replace(MUSIC_DIR + "/", "")
+    return rel.split("/")[0] if "/" in rel else ""
+
+
+def build_playlist(output_file, count, genres):
+    rows = load_tracks(genres)
+    if not rows:
+        print(f"WARNING: No tracks found for genres: {', '.join(genres)}")
+        open(output_file, "w").close()
+        return
+
+    spin_counts = get_spin_counts()
+    recently_played = get_recent_plays(RECENT_PLAY_HOURS)
+    now = datetime.now()
+    new_cutoff = now - timedelta(days=NEW_MUSIC_DAYS)
+
+    # First pass: drop anything in the recency floor.
+    candidates = []
+    excluded_recent = 0
+    for row in rows:
+        _, artist, title, _, _ = row
+        key = ((artist or "").lower(), (title or "").lower())
+        if key in recently_played:
+            excluded_recent += 1
+            continue
+        candidates.append(row)
+
+    random.shuffle(candidates)
+
+    def sort_key(row):
+        _, artist, title, _, file_modified = row
+        key = ((artist or "").lower(), (title or "").lower())
+        score = spin_counts.get(key, 0) + random.random() * 2
+        if file_modified and file_modified >= new_cutoff:
+            score += NEW_MUSIC_BOOST
+        return score
+
+    candidates.sort(key=sort_key)
+
+    selected = []
+    # Title dedup is keyed on (artist, title) so two different artists
+    # can both contribute a track titled "Part 1", or two covers of the
+    # same standard. Same artist with same title still gets dedup'd,
+    # which catches duplicate uploads / multi-folder copies of the
+    # same song.
+    seen_titles = set()
+    artist_counts = defaultdict(int)
+    # Album cap is keyed on (artist, album) so compilations whose
+    # tracks have many distinct artists (a Various Artists singles
+    # folder) don't get capped at 5 — only same-artist same-album
+    # blocks (real albums) are capped.
+    album_counts = defaultdict(int)
+    new_in_set = 0
+
+    for filepath, artist, title, album, file_modified in candidates:
+        if len(selected) >= count:
+            break
+
+        artist_key = (artist or _artist_from_path(filepath)).strip()
+        title_key = (title or "").strip().lower()
+        artist_lower = artist_key.lower()
+        title_dedup_key = (artist_lower, title_key)
+        album_key = (artist_lower, (album or "").strip().lower())
+
+        if title_key and title_dedup_key in seen_titles:
+            continue
+        if artist_counts[artist_key] >= MAX_PER_ARTIST:
+            continue
+        if album_key[1] and album_counts[album_key] >= MAX_PER_ALBUM:
+            continue
+
+        selected.append(filepath)
+        if title_key:
+            seen_titles.add(title_dedup_key)
+        artist_counts[artist_key] += 1
+        if album_key[1]:
+            album_counts[album_key] += 1
+        if file_modified and file_modified >= new_cutoff:
+            new_in_set += 1
+
+    with open(output_file, "w") as f:
+        for filepath in selected:
+            f.write(filepath.replace(MUSIC_DIR, RADIO_MUSIC_DIR) + "\n")
+
+    # Stats
+    num_artists = len([a for a, c in artist_counts.items() if c > 0])
+    never_played = sum(
+        1 for r in candidates
+        if spin_counts.get(((r[1] or "").lower(), (r[2] or "").lower()), 0) == 0
+    )
+    low_play = sum(
+        1 for r in candidates
+        if 1 <= spin_counts.get(((r[1] or "").lower(), (r[2] or "").lower()), 0) <= 3
+    )
+    heavy_play = sum(
+        1 for r in candidates
+        if spin_counts.get(((r[1] or "").lower(), (r[2] or "").lower()), 0) >= 4
+    )
+    print(
+        f"{os.path.basename(output_file)}: {len(selected)} tracks from "
+        f"{num_artists} artists  |  pool {len(rows)} → "
+        f"{len(candidates)} after recency (-{excluded_recent})  |  "
+        f"{new_in_set} new-music in selection  |  "
+        f"pool spin distribution: never={never_played} low(1-3)={low_play} heavy(4+)={heavy_play}"
+    )
+
+
+def main():
+    if len(sys.argv) < 4:
+        print("Usage: build-smart-playlist.py OUTPUT_FILE COUNT GENRE1 [GENRE2 ...]")
+        sys.exit(1)
+
+    output_file = sys.argv[1]
+    count = int(sys.argv[2])
+    genres = sys.argv[3:]
+    build_playlist(output_file, count, genres)
+
+
+if __name__ == "__main__":
+    main()

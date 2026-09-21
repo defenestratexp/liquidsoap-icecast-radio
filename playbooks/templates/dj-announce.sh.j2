@@ -1,0 +1,140 @@
+#!/bin/bash
+# DJ voice announcement generator using Piper TTS
+# Reads track info from /tmp/radio-dj/tracks.txt (written by Liquidsoap)
+# Format: 7 lines - artist1, title1, album1, artist2, title2, artist3, title3
+# Includes current show name from /tmp/radio-dj/current_show.txt
+# Managed by Ansible - do not edit manually
+
+PIPER=/usr/local/bin/piper-tts
+MODEL=/opt/piper/voices/en_US-ryan-medium.onnx
+OUTDIR=/tmp/radio-dj
+INFOFILE="$OUTDIR/tracks.txt"
+SHOW_FILE="$OUTDIR/current_show.txt"
+STATION="{{ station_tts_name }}"
+DJ_CONFIG="/opt/radio/dj-config.sh"
+
+mkdir -p "$OUTDIR"
+
+# Source DJ config and set voice model based on current show
+DJ_NAME=""
+DJ_VOICE=""
+if [ -f "$DJ_CONFIG" ]; then
+    source "$DJ_CONFIG"
+    current_show=""
+    if [ -f "$SHOW_FILE" ]; then
+        current_show=$(cat "$SHOW_FILE")
+    fi
+    get_dj_info "$current_show"
+    if [ -n "$DJ_VOICE" ] && [ -f "$DJ_VOICE" ]; then
+        MODEL="$DJ_VOICE"
+    fi
+fi
+
+# Clean up old announcements (older than 1 hour)
+find "$OUTDIR" -name "dj_*" -mmin +60 -delete 2>/dev/null
+
+# Read track info from file
+if [ ! -f "$INFOFILE" ]; then
+    exit 1
+fi
+
+mapfile -t lines < "$INFOFILE"
+prev1_artist="${lines[0]}"
+prev1_title="${lines[1]}"
+prev1_album="${lines[2]}"
+prev2_artist="${lines[3]}"
+prev2_title="${lines[4]}"
+prev3_artist="${lines[5]}"
+prev3_title="${lines[6]}"
+
+# Build sign-off with DJ name and show
+sign_off=""
+if [ -n "$DJ_NAME" ]; then
+    current_show=""
+    if [ -f "$SHOW_FILE" ]; then
+        current_show=$(cat "$SHOW_FILE")
+    fi
+    if [ -n "$current_show" ] && [ "$current_show" != "{{ station_name }}" ]; then
+        sign_off="I'm ${DJ_NAME} and you're listening to ${current_show} on ${STATION}."
+    else
+        sign_off="I'm ${DJ_NAME} and you're listening to ${STATION}."
+    fi
+else
+    if [ -f "$SHOW_FILE" ]; then
+        current_show=$(cat "$SHOW_FILE")
+        if [ -n "$current_show" ] && [ "$current_show" != "{{ station_name }}" ]; then
+            sign_off="You're listening to ${current_show} on ${STATION}."
+        else
+            sign_off="You're listening to ${STATION}."
+        fi
+    else
+        sign_off="You're listening to ${STATION}."
+    fi
+fi
+
+# Get next track info from Liquidsoap telnet
+next_info=$(echo "music.next" | nc -q 1 127.0.0.1 1234 2>/dev/null | grep "\[ready\]" | sed 's/\[ready\] //')
+next_title=""
+next_album=""
+if [ -n "$next_info" ]; then
+    next_title=$(ffprobe -v quiet -show_entries format_tags=title -of default=noprint_wrappers=1:nokey=1 "$next_info" 2>/dev/null)
+    next_album=$(ffprobe -v quiet -show_entries format_tags=album -of default=noprint_wrappers=1:nokey=1 "$next_info" 2>/dev/null)
+fi
+
+# Build the announcement text
+# "From the album [album] by [artist], that was [title].
+#  Before that it was [title] by [artist], and [title] by [artist].
+#  Next up from [album] its [title].
+#  You're listening to [Show Name] on [station]."
+
+text=""
+
+# Most recent track with album
+if [ -n "$prev1_title" ] && [ -n "$prev1_album" ] && [ -n "$prev1_artist" ]; then
+    text="From the album ${prev1_album} by ${prev1_artist}, that was ${prev1_title}."
+elif [ -n "$prev1_title" ] && [ -n "$prev1_artist" ]; then
+    text="That was ${prev1_title} by ${prev1_artist}."
+elif [ -n "$prev1_title" ]; then
+    text="That was ${prev1_title}."
+fi
+
+# Previous tracks
+if [ -n "$prev2_title" ] && [ -n "$prev3_title" ]; then
+    p2="${prev2_title}"
+    [ -n "$prev2_artist" ] && p2="${prev2_title} by ${prev2_artist}"
+    p3="${prev3_title}"
+    [ -n "$prev3_artist" ] && p3="${prev3_title} by ${prev3_artist}"
+    text="${text} Before that it was ${p2}, and ${p3}."
+elif [ -n "$prev2_title" ]; then
+    p2="${prev2_title}"
+    [ -n "$prev2_artist" ] && p2="${prev2_title} by ${prev2_artist}"
+    text="${text} Before that it was ${p2}."
+fi
+
+# Next track
+if [ -n "$next_title" ] && [ -n "$next_album" ]; then
+    text="${text} Next up from ${next_album}, its ${next_title}."
+elif [ -n "$next_title" ]; then
+    text="${text} Next up, ${next_title}."
+fi
+
+text="${text} ${sign_off}"
+
+ts=$(date +%s%N)
+wavfile="${OUTDIR}/dj_${ts}.wav"
+mp3file="${OUTDIR}/dj_${ts}.mp3"
+
+# Generate TTS as WAV then convert to MP3 matching stream format
+echo "$text" | "$PIPER" --model "$MODEL" --output_file "$wavfile" >/dev/null 2>&1
+
+if [ -f "$wavfile" ]; then
+    ffmpeg -y -i "$wavfile" -ar 44100 -ac 2 -b:a 128k "$mp3file" 2>/dev/null
+    rm -f "$wavfile"
+    if [ -f "$mp3file" ]; then
+        echo "$mp3file"
+    else
+        exit 1
+    fi
+else
+    exit 1
+fi

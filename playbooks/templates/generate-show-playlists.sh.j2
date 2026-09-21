@@ -1,0 +1,81 @@
+#!/bin/bash
+# Generate genre-based show playlists.
+# Runs on the NAS. Track metadata lives in radio_metadata.tracks (Postgres);
+# this script first runs the incremental scanner to pick up any
+# new/changed files, then invokes build-smart-playlist.py per show.
+# Managed by Ansible - do not edit manually
+
+set -u
+
+OUTPUT_DIR="/mnt/media/radio-shows"
+TRACKS_PER_SHOW=1000
+TRACKS_DEFAULT=2000
+
+SCANNER="/opt/radio/scan-music-metadata.py"
+SMART_BUILDER="/opt/radio/build-smart-playlist.py"
+
+mkdir -p "$OUTPUT_DIR"
+
+# --- Incremental metadata scan ---
+# Passing --rebuild forces a full re-scan (kept for manual invocation).
+if [ "${1:-}" = "--rebuild-cache" ] || [ "${1:-}" = "--rescan" ]; then
+    echo "Forcing full metadata rescan..."
+    python3 "$SCANNER" --rebuild
+else
+    echo "Running incremental metadata scan..."
+    python3 "$SCANNER" --quiet
+fi
+
+# --- Smart playlist builder ---
+build_playlist() {
+    local outfile="$1"
+    local count="$2"
+    shift 2
+    python3 "$SMART_BUILDER" "$outfile" "$count" "$@"
+}
+
+echo "Generating show playlists..."
+
+build_playlist "$OUTPUT_DIR/loud_and_clear.m3u" "$TRACKS_PER_SHOW" \
+    "Rock" "Hard Rock" "Grunge" "Alternative" "Progressive Rock"
+
+build_playlist "$OUTPUT_DIR/the_hook.m3u" "$TRACKS_PER_SHOW" \
+    "Pop"
+
+build_playlist "$OUTPUT_DIR/soul_kitchen.m3u" "$TRACKS_PER_SHOW" \
+    "Jazz" "Blues" "Funk" "R&B/Soul"
+
+build_playlist "$OUTPUT_DIR/the_cypher.m3u" "$TRACKS_PER_SHOW" \
+    "Hip-Hop"
+
+build_playlist "$OUTPUT_DIR/roots_and_routes.m3u" "$TRACKS_PER_SHOW" \
+    "Reggae" "Folk"
+
+build_playlist "$OUTPUT_DIR/backroads.m3u" "$TRACKS_PER_SHOW" \
+    "Country" "World"
+
+build_playlist "$OUTPUT_DIR/the_pit.m3u" "$TRACKS_PER_SHOW" \
+    "Metal"
+
+build_playlist "$OUTPUT_DIR/no_rules.m3u" "$TRACKS_PER_SHOW" \
+    "Punk"
+
+build_playlist "$OUTPUT_DIR/signal_and_noise.m3u" "$TRACKS_PER_SHOW" \
+    "Electronic" "Trip-Hop"
+
+build_playlist "$OUTPUT_DIR/quiet_hours.m3u" "$TRACKS_PER_SHOW" \
+    "Classical" "New Age" "Soundtrack" "Lounge"
+
+build_playlist "$OUTPUT_DIR/the_laugh_track.m3u" "$TRACKS_PER_SHOW" \
+    "Comedy"
+
+build_playlist "$OUTPUT_DIR/the_industrial_complex.m3u" "$TRACKS_PER_SHOW" \
+    "Industrial"
+
+build_playlist "$OUTPUT_DIR/bass_drop.m3u" "$TRACKS_PER_SHOW" \
+    "Dub"
+
+echo "Generating default shuffle..."
+build_playlist "$OUTPUT_DIR/default_shuffle.m3u" "$TRACKS_DEFAULT" "__ALL__"
+
+echo "Done. Playlists written to $OUTPUT_DIR/"

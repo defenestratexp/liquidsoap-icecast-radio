@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#e94560">
+<title>{{ station_name }} - Show Schedule</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #1a1a2e;
+    color: #eee;
+    display: flex;
+    justify-content: center;
+    padding: 40px 20px;
+    min-height: 100vh;
+  }
+  .container {
+    background: #16213e;
+    border-radius: 12px;
+    padding: 40px;
+    width: 600px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+  .station-name {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: #e94560;
+    text-align: center;
+    margin-bottom: 4px;
+  }
+  .station-sub {
+    font-size: 13px;
+    color: #888;
+    text-align: center;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+  }
+  .page-title {
+    font-size: 16px;
+    color: #533483;
+    text-align: center;
+    letter-spacing: 1px;
+    margin-bottom: 30px;
+  }
+  .show-block {
+    background: #0f3460;
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    transition: background 0.2s;
+  }
+  .show-block.active {
+    background: #1a4a7a;
+    border-left: 3px solid #e94560;
+  }
+  .show-time {
+    font-size: 12px;
+    color: #6a7494;
+    width: 120px;
+    flex-shrink: 0;
+  }
+  .show-info {
+    flex: 1;
+  }
+  .show-name {
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 2px;
+  }
+  .show-dj {
+    font-size: 13px;
+    color: #a8b2d1;
+  }
+  .show-genres {
+    font-size: 11px;
+    color: #6a7494;
+    margin-top: 2px;
+  }
+  .nav-link {
+    display: block;
+    text-align: center;
+    margin-top: 24px;
+    font-size: 13px;
+    color: #a8b2d1;
+    letter-spacing: 1px;
+    text-decoration: none;
+  }
+  .nav-link:hover { color: #e94560; }
+  .tz-note {
+    text-align: center;
+    font-size: 11px;
+    color: #555;
+    margin-top: 12px;
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div class="station-name">{{ station_short_name }}</div>
+  <div class="station-sub">{{ station_tagline }}</div>
+  <div class="page-title">Show Schedule</div>
+
+  <div id="schedule">
+    <div class="show-block" data-start="6" data-end="9">
+      <div class="show-time">6:00am - 9:00am</div>
+      <div class="show-info">
+        <div class="show-name">Loud and Clear</div>
+        <div class="show-dj">with Ryan Cross</div>
+        <div class="show-genres">Rock &bull; Hard Rock &bull; Grunge &bull; Alternative</div>
+      </div>
+    </div>
+    <div class="show-block" data-start="9" data-end="10">
+      <div class="show-time">9:00am - 10:00am</div>
+      <div class="show-info">
+        <div class="show-name">Bass Drop</div>
+        <div class="show-dj">with Iggy Stevenson</div>
+        <div class="show-genres">Dubstep &bull; Bass Music</div>
+      </div>
+    </div>
+    <div class="show-block" data-start="10" data-end="12">
+      <div class="show-time">10:00am - 12:00pm</div>
+      <div class="show-info">
+        <div class="show-name">The Industrial Complex</div>
+        <div class="show-dj">with Norman Gears</div>
+        <div class="show-genres">Industrial</div>
+      </div>
+    </div>
+    <div class="show-block" data-start="12" data-end="14">
+      <div class="show-time">12:00pm - 2:00pm</div>
+      <div class="show-info">
+        <div class="show-name">The Hook</div>
+        <div class="show-dj">with Amy Sinclair</div>
+        <div class="show-genres">Pop</div>
+      </div>
+    </div>
+    <div class="show-block" data-start="14" data-end="16">
+      <div class="show-time">2:00pm - 4:00pm</div>
+      <div class="show-info">
+        <div class="show-name">Soul Kitchen</div>
+        <div class="show-dj">with Joe Valentino</div>
+        <div class="show-genres">Jazz &bull; Blues &bull; Funk &bull; R&B/Soul</div>
+      </div>
+    </div>
+    <div class="show-block" data-start="16" data-end="17">
+      <div class="show-time">4:00pm - 5:00pm</div>
+      <div class="show-info">
+        <div class="show-name">The Cypher</div>
+        <div class="show-dj">with Danny Blaze</div>
+        <div class="show-genres">Hip-Hop</div>
+      </div>
+    </div>
+    <div class="show-block" data-start="17" data-end="19">
+      <div class="show-time">5:00pm - 7:00pm</div>
+      <div class="show-info">
+        <div class="show-name">Loud and Clear</div>
+        <div class="show-dj">with Ryan Cross</div>
+        <div class="show-genres">Rock &bull; Hard Rock &bull; Grunge &bull; Alternative</div>
+      </div>
+    </div>
+    <div class="show-block" data-start="19" data-end="20">
+      <div class="show-time">7:00pm - 8:00pm</div>
+      <div class="show-info">
+        <div class="show-name">Roots and Routes</div>
+        <div class="show-dj">with Kathleen Rivers</div>
+        <div class="show-genres">Reggae &bull; Folk</div>
+      </div>
+    </div>
+    <div class="show-block" data-start="20" data-end="22">
+      <div class="show-time">8:00pm - 10:00pm</div>
+      <div class="show-info">
+        <div class="show-name">The Pit</div>
+        <div class="show-dj">with Bryce Hammett</div>
+        <div class="show-genres">Metal</div>
+      </div>
+    </div>
+    <div class="show-block" data-start="22" data-end="23">
+      <div class="show-time">10:00pm - 11:00pm</div>
+      <div class="show-info">
+        <div class="show-name">No Rules</div>
+        <div class="show-dj">with Sam Vicious</div>
+        <div class="show-genres">Punk</div>
+      </div>
+    </div>
+    <div class="show-block" data-start="23" data-end="1">
+      <div class="show-time">11:00pm - 1:00am</div>
+      <div class="show-info">
+        <div class="show-name">Signal and Noise</div>
+        <div class="show-dj">with Kristin Volt</div>
+        <div class="show-genres">Electronic &bull; Trip-Hop</div>
+      </div>
+    </div>
+    <div class="show-block" data-start="1" data-end="3">
+      <div class="show-time">1:00am - 3:00am</div>
+      <div class="show-info">
+        <div class="show-name">Quiet Hours</div>
+        <div class="show-dj">with Lessac Monroe</div>
+        <div class="show-genres">Classical &bull; New Age &bull; Soundtrack &bull; Lounge</div>
+      </div>
+    </div>
+    <div class="show-block" data-start="3" data-end="5">
+      <div class="show-time">3:00am - 5:00am</div>
+      <div class="show-info">
+        <div class="show-name">Backroads</div>
+        <div class="show-dj">with John Wilder</div>
+        <div class="show-genres">Country &bull; World</div>
+      </div>
+    </div>
+    <div class="show-block" data-start="5" data-end="6">
+      <div class="show-time">5:00am - 6:00am</div>
+      <div class="show-info">
+        <div class="show-name">The Laugh Track</div>
+        <div class="show-dj">with Hank Miller</div>
+        <div class="show-genres">Comedy</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tz-note">All times Pacific (PT)</div>
+  <a href="/player.html" class="nav-link">Back to Player</a>
+</div>
+
+<script>
+  // Highlight current show
+  function highlightCurrent() {
+    var hour = new Date().getHours();
+    // Adjust for PT if viewer is in different timezone
+    var blocks = document.querySelectorAll('.show-block');
+    blocks.forEach(function(b) {
+      var start = parseInt(b.dataset.start);
+      var end = parseInt(b.dataset.end);
+      var active = false;
+      if (end > start) {
+        active = (hour >= start && hour < end);
+      } else {
+        // Wraps midnight (e.g., 23-1)
+        active = (hour >= start || hour < end);
+      }
+      if (active) {
+        b.classList.add('active');
+      } else {
+        b.classList.remove('active');
+      }
+    });
+  }
+  highlightCurrent();
+  setInterval(highlightCurrent, 60000);
+</script>
+
+</body>
+</html>

@@ -1,0 +1,20 @@
+# Spin Tracker - Flask web app for play history
+# Managed by Ansible - do not edit manually
+
+[Unit]
+Description=Radio Spin Tracker
+After=network.target
+
+[Service]
+Type=simple
+User=liquidsoap
+Group=liquidsoap
+WorkingDirectory=/opt/radio
+ExecStart=/usr/bin/python3 /opt/radio/spin-tracker.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

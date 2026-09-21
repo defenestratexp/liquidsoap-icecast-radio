@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""Scan the music library ID3 tags into radio_metadata.tracks.
+
+Walks MUSIC_DIR for MP3 files, reads tags via mutagen, and UPSERTs
+each row into Postgres. Incremental by default: a file whose mtime
+matches the DB's file_modified is skipped. Pass --rebuild to force
+a full re-scan. Rows for files that no longer exist on disk are
+removed.
+
+Managed by Ansible - do not edit manually.
+"""
+
+import argparse
+import os
+import sys
+import time
+from datetime import datetime
+
+import psycopg2
+from psycopg2.extras import execute_batch
+from mutagen import File as MutagenFile
+
+MUSIC_DIR = "/mnt/media/music"
+DB_PASSWORD_FILE = "/etc/radio/db-password"
+DB_HOST = "{{ pg_host }}"
+DB_PORT = {{ pg_port }}
+DB_NAME = "radio_metadata"
+DB_USER = "radio_indexer"
+
+BATCH_SIZE = 500
+
+# Genre normalization: collapse equivalent spellings into the canonical form
+# that build-smart-playlist.py expects. Match is case-insensitive.
+# Existing rows are not rewritten when this map changes; re-run with
+# --rebuild (or an equivalent SQL UPDATE) after editing it.
+NORMALIZE_GENRE = {
+    # Hip-Hop cluster
+    "rap": "Hip-Hop",
+    "rap & hip-hop": "Hip-Hop",
+    "rap/hip-hop": "Hip-Hop",
+    "hip hop": "Hip-Hop",
+    "hip-hop/rap": "Hip-Hop",
+    # R&B / Soul
+    "soul and r&b": "R&B/Soul",
+    "r&b": "R&B/Soul",
+    # Electronic cluster
+    "electronica": "Electronic",
+    "electronica/dance": "Electronic",
+    "dance": "Electronic",
+    "techno": "Electronic",
+    # Punk
+    "punk rock": "Punk",
+    # Metal
+    "heavy metal": "Metal",
+    "nu-metal": "Metal",
+    # Soundtrack
+    "soundtracks": "Soundtrack",
+    # Lounge
+    "easy listening": "Lounge",
+}
+
+
+def normalize_genre(genre):
+    if not genre:
+        return genre
+    return NORMALIZE_GENRE.get(genre.strip().lower(), genre)
+
+
+# Folder-based genre overrides. Case-insensitive startswith match against
+# the absolute filepath. Use when an artist's folder is consistently
+# mis-tagged in its ID3 and we want every file under that folder to land
+# in a specific show genre regardless of what the file says. This runs
+# after normalize_genre() and WINS over both the raw tag and normalization.
+ARTIST_FOLDER_OVERRIDE = {
+    # "/mnt/media/music/<artist folder>/": "Alternative",
+}
+
+
+def apply_folder_override(filepath, genre):
+    if not filepath:
+        return genre
+    lower = filepath.lower()
+    for prefix, target in ARTIST_FOLDER_OVERRIDE.items():
+        if lower.startswith(prefix):
+            return target
+    return genre
+
+
+def load_password():
+    with open(DB_PASSWORD_FILE) as f:
+        return f.read().strip()
+
+
+def connect():
+    return psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=load_password(),
+        connect_timeout=5,
+    )
+
+
+def existing_mtimes(conn):
+    mtimes = {}
+    with conn.cursor() as cur:
+        cur.execute("SELECT filepath, file_modified FROM tracks")
+        for fp, fm in cur:
+            mtimes[fp] = fm
+    return mtimes
+
+
+def _first(audio, key):
+    val = audio.get(key)
+    if isinstance(val, list):
+        return val[0] if val else ""
+    return val or ""
+
+
+def extract_tags(filepath):
+    try:
+        audio = MutagenFile(filepath, easy=True)
+    except Exception:
+        return None
+    if audio is None:
+        return None
+
+    artist = _first(audio, "artist")
+    title = _first(audio, "title")
+    album = _first(audio, "album")
+    genre = normalize_genre(_first(audio, "genre"))
+    genre = apply_folder_override(filepath, genre)
+
+    track_raw = _first(audio, "tracknumber")
+    try:
+        track_number = int(str(track_raw).split("/")[0]) if track_raw else 0
+    except ValueError:
+        track_number = 0
+
+    duration = 0.0
+    try:
+        duration = float(audio.info.length)
+    except Exception:
+        pass
+
+    return {
+        "artist": str(artist),
+        "title": str(title),
+        "album": str(album),
+        "genre": str(genre),
+        "track_number": track_number,
+        "duration_seconds": duration,
+    }
+
+
+UPSERT_SQL = """
+    INSERT INTO tracks (
+        filepath, artist, title, album, genre, track_number,
+        duration_seconds, file_modified, last_scanned
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+    ON CONFLICT (filepath) DO UPDATE SET
+        artist = EXCLUDED.artist,
+        title = EXCLUDED.title,
+        album = EXCLUDED.album,
+        genre = EXCLUDED.genre,
+        track_number = EXCLUDED.track_number,
+        duration_seconds = EXCLUDED.duration_seconds,
+        file_modified = EXCLUDED.file_modified,
+        last_scanned = NOW()
+"""
+
+
+def flush(conn, batch):
+    if not batch:
+        return
+    with conn.cursor() as cur:
+        execute_batch(cur, UPSERT_SQL, batch, page_size=BATCH_SIZE)
+    conn.commit()
+
+
+def delete_missing(conn, seen_paths):
+    with conn.cursor() as cur:
+        cur.execute("SELECT filepath FROM tracks")
+        db_paths = {fp for (fp,) in cur.fetchall()}
+    missing = db_paths - seen_paths
+    if not missing:
+        return 0
+    with conn.cursor() as cur:
+        cur.executemany("DELETE FROM tracks WHERE filepath = %s", [(p,) for p in missing])
+    conn.commit()
+    return len(missing)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--rebuild", action="store_true", help="Force re-scan of every file")
+    ap.add_argument("--quiet", action="store_true", help="Suppress progress lines")
+    args = ap.parse_args()
+
+    start = time.monotonic()
+    conn = connect()
+    mtimes = {} if args.rebuild else existing_mtimes(conn)
+    if not args.quiet:
+        print(f"Loaded {len(mtimes)} existing mtimes from DB")
+
+    batch = []
+    scanned = 0
+    updated = 0
+    skipped = 0
+    errors = 0
+    seen_paths = set()
+
+    for root, _, files in os.walk(MUSIC_DIR):
+        for fname in files:
+            if not fname.lower().endswith(".mp3"):
+                continue
+            filepath = os.path.join(root, fname)
+            seen_paths.add(filepath)
+            scanned += 1
+
+            try:
+                mtime = datetime.fromtimestamp(os.stat(filepath).st_mtime)
+            except OSError:
+                errors += 1
+                continue
+
+            if not args.rebuild:
+                existing = mtimes.get(filepath)
+                if existing is not None and abs((existing - mtime).total_seconds()) < 1:
+                    skipped += 1
+                    continue
+
+            tags = extract_tags(filepath)
+            if tags is None:
+                errors += 1
+                continue
+
+            batch.append((
+                filepath,
+                tags["artist"],
+                tags["title"],
+                tags["album"],
+                tags["genre"],
+                tags["track_number"],
+                tags["duration_seconds"],
+                mtime,
+            ))
+            updated += 1
+
+            if len(batch) >= BATCH_SIZE:
+                flush(conn, batch)
+                batch = []
+                if not args.quiet and updated % 5000 == 0:
+                    elapsed = time.monotonic() - start
+                    rate = updated / elapsed if elapsed > 0 else 0
+                    print(f"  updated={updated} scanned={scanned} skipped={skipped} "
+                          f"elapsed={elapsed:.1f}s rate={rate:.0f}/s")
+
+    flush(conn, batch)
+    removed = delete_missing(conn, seen_paths)
+    conn.close()
+
+    elapsed = time.monotonic() - start
+    print(f"Scan complete: scanned={scanned} updated={updated} skipped={skipped} "
+          f"removed={removed} errors={errors} elapsed={elapsed:.1f}s")
+
+
+if __name__ == "__main__":
+    main()

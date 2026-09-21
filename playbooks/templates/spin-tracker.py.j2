@@ -1,0 +1,389 @@
+#!/usr/bin/env python3
+"""Spin Tracker - play history for {{ station_name }}.
+
+A Flask web app that provides search, top plays, and recent spins
+from the radio_spins.spins Postgres table populated by log-spin.py.
+
+Managed by Ansible - do not edit manually.
+"""
+
+import psycopg2
+import psycopg2.extras
+from flask import Flask, request
+
+app = Flask(__name__)
+
+DB_PASSWORD_FILE = "/etc/radio/db-password"
+DB_HOST = "{{ pg_host }}"
+DB_PORT = {{ pg_port }}
+DB_NAME = "radio_spins"
+DB_USER = "radio_app"
+
+
+def _load_password():
+    with open(DB_PASSWORD_FILE) as f:
+        return f.read().strip()
+
+
+_DB_PASSWORD = None
+
+
+def _password():
+    global _DB_PASSWORD
+    if _DB_PASSWORD is None:
+        _DB_PASSWORD = _load_password()
+    return _DB_PASSWORD
+
+# ---------------------------------------------------------------------------
+# HTML Templates (inline)
+# ---------------------------------------------------------------------------
+
+BASE_CSS = """
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #1a1a2e;
+  color: #eee;
+  min-height: 100vh;
+}
+a { color: #e94560; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 30px 20px;
+}
+.header {
+  text-align: center;
+  margin-bottom: 30px;
+}
+.header h1 {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: #e94560;
+  margin-bottom: 4px;
+}
+.header .sub {
+  font-size: 13px;
+  color: #888;
+  letter-spacing: 1px;
+  margin-bottom: 20px;
+}
+.nav {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+.nav a {
+  background: #16213e;
+  padding: 8px 18px;
+  border-radius: 6px;
+  font-size: 14px;
+  color: #a8b2d1;
+  transition: all 0.2s;
+}
+.nav a:hover, .nav a.active {
+  background: #0f3460;
+  color: #e94560;
+  text-decoration: none;
+}
+.search-box {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 24px;
+}
+.search-box form {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  max-width: 500px;
+}
+.search-box input[type="text"] {
+  flex: 1;
+  padding: 10px 16px;
+  border-radius: 6px;
+  border: 1px solid #0f3460;
+  background: #16213e;
+  color: #eee;
+  font-size: 15px;
+  outline: none;
+}
+.search-box input[type="text"]:focus {
+  border-color: #e94560;
+}
+.search-box button {
+  padding: 10px 20px;
+  border-radius: 6px;
+  border: none;
+  background: #e94560;
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.search-box button:hover {
+  background: #ff6b81;
+}
+.section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: #e94560;
+  margin-bottom: 12px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 30px;
+}
+th {
+  background: #0f3460;
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #a8b2d1;
+}
+td {
+  padding: 10px 14px;
+  border-bottom: 1px solid #16213e;
+  font-size: 14px;
+  color: #ccc;
+}
+tr:hover td {
+  background: #16213e;
+}
+.empty {
+  text-align: center;
+  color: #666;
+  padding: 40px;
+  font-size: 16px;
+}
+.back-link {
+  text-align: center;
+  margin-top: 20px;
+  font-size: 13px;
+}
+"""
+
+
+def page(title_text, nav_active, content):
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title_text} - {{ station_name }} Spin Tracker</title>
+<style>{BASE_CSS}</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>{{ station_name }}</h1>
+    <div class="sub">Spin Tracker</div>
+  </div>
+  <div class="nav">
+    <a href="/stats/" class="{"active" if nav_active == "top" else ""}">Top 50</a>
+    <a href="/stats/recent" class="{"active" if nav_active == "recent" else ""}">Recent Plays</a>
+    <a href="/stats/search" class="{"active" if nav_active == "search" else ""}">Search</a>
+    <a href="/player.html">Back to Player</a>
+  </div>
+  {content}
+</div>
+</body>
+</html>"""
+
+
+# ---------------------------------------------------------------------------
+# Database helpers
+# ---------------------------------------------------------------------------
+
+def get_db():
+    return psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=_password(),
+        connect_timeout=5,
+    )
+
+
+def safe_query(query, params=()):
+    try:
+        conn = get_db()
+        with conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@app.route("/")
+def index():
+    return top50()
+
+
+@app.route("/top")
+def top50():
+    rows = safe_query("""
+        SELECT title, artist, album,
+               COUNT(*) as spins,
+               MAX(played_at) as last_played
+        FROM spins
+        GROUP BY LOWER(title), LOWER(artist), title, artist, album
+        ORDER BY spins DESC, last_played DESC
+        LIMIT 50
+    """)
+
+    if not rows:
+        content = '<div class="empty">No spins recorded yet.</div>'
+    else:
+        table_rows = ""
+        for r in rows:
+            table_rows += f"""<tr>
+              <td>{_esc(r["title"])}</td>
+              <td>{_esc(r["artist"])}</td>
+              <td>{_esc(r["album"])}</td>
+              <td>{r["spins"]}</td>
+              <td>{_fmt_time(r["last_played"])}</td>
+            </tr>"""
+        content = f"""
+        <div class="section-label">Top 50 Most Played</div>
+        <table>
+          <tr><th>Song</th><th>Artist</th><th>Album</th><th>Spins</th><th>Last Played</th></tr>
+          {table_rows}
+        </table>"""
+
+    return page("Top 50", "top", content)
+
+
+@app.route("/recent")
+def recent():
+    rows = safe_query("""
+        SELECT title, artist, album, show_name, played_at
+        FROM spins
+        ORDER BY played_at DESC
+        LIMIT 50
+    """)
+
+    if not rows:
+        content = '<div class="empty">No spins recorded yet.</div>'
+    else:
+        table_rows = ""
+        for r in rows:
+            table_rows += f"""<tr>
+              <td>{_esc(r["title"])}</td>
+              <td>{_esc(r["artist"])}</td>
+              <td>{_esc(r["album"])}</td>
+              <td>{_esc(r["show_name"])}</td>
+              <td>{_fmt_time(r["played_at"])}</td>
+            </tr>"""
+        content = f"""
+        <div class="section-label">Recent Plays</div>
+        <table>
+          <tr><th>Song</th><th>Artist</th><th>Album</th><th>Show</th><th>Played At</th></tr>
+          {table_rows}
+        </table>"""
+
+    return page("Recent Plays", "recent", content)
+
+
+@app.route("/search")
+def search():
+    q = request.args.get("q", "").strip()
+
+    search_form = """
+    <div class="search-box">
+      <form action="/stats/search" method="get">
+        <input type="text" name="q" placeholder="Search by song, artist, or album..." value="{q}" autofocus>
+        <button type="submit">Search</button>
+      </form>
+    </div>
+    """.format(q=_esc(q))
+
+    if not q:
+        return page("Search", "search", search_form + '<div class="empty">Enter a search term above.</div>')
+
+    like = f"%{q}%"
+    rows = safe_query("""
+        SELECT title, artist, album,
+               COUNT(*) as spins,
+               MAX(played_at) as last_played
+        FROM spins
+        WHERE title ILIKE %s
+           OR artist ILIKE %s
+           OR album ILIKE %s
+        GROUP BY LOWER(title), LOWER(artist), title, artist, album
+        ORDER BY spins DESC, last_played DESC
+        LIMIT 100
+    """, (like, like, like))
+
+    if not rows:
+        result = f'<div class="empty">No results for "{_esc(q)}".</div>'
+    else:
+        table_rows = ""
+        for r in rows:
+            table_rows += f"""<tr>
+              <td>{_esc(r["title"])}</td>
+              <td>{_esc(r["artist"])}</td>
+              <td>{_esc(r["album"])}</td>
+              <td>{r["spins"]}</td>
+              <td>{_fmt_time(r["last_played"])}</td>
+            </tr>"""
+        result = f"""
+        <div class="section-label">Results for "{_esc(q)}" ({len(rows)} found)</div>
+        <table>
+          <tr><th>Song</th><th>Artist</th><th>Album</th><th>Spins</th><th>Last Played</th></tr>
+          {table_rows}
+        </table>"""
+
+    return page("Search", "search", search_form + result)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _esc(s):
+    """Escape HTML entities."""
+    if not s:
+        return ""
+    return (
+        str(s)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _fmt_time(value):
+    """Format a datetime or ISO string for display as 'YYYY-MM-DD HH:MM:SS'."""
+    if not value:
+        return ""
+    try:
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    except AttributeError:
+        s = str(value).replace("T", " ")
+        if "." in s:
+            s = s[: s.index(".")]
+        return s
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=False)

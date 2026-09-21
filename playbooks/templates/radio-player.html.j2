@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#e94560">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.json">
+<title>{{ station_name }}</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #1a1a2e;
+    color: #eee;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+  }
+  .player {
+    background: #16213e;
+    border-radius: 12px;
+    padding: 40px;
+    width: 480px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    text-align: center;
+  }
+  .station-name {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: #e94560;
+    margin-bottom: 4px;
+  }
+  .station-sub {
+    font-size: 13px;
+    color: #888;
+    margin-bottom: 30px;
+    letter-spacing: 1px;
+  }
+  .show-name {
+    font-size: 16px;
+    font-weight: 500;
+    color: #533483;
+    letter-spacing: 1px;
+    margin-bottom: 4px;
+    min-height: 20px;
+  }
+  .show-genres {
+    font-size: 12px;
+    color: #6a7494;
+    letter-spacing: 1px;
+    margin-bottom: 20px;
+    min-height: 16px;
+  }
+  .section-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #e94560;
+    margin-bottom: 10px;
+  }
+  .track-info {
+    background: #0f3460;
+    border-radius: 8px;
+    padding: 18px;
+    margin-bottom: 20px;
+    min-height: 80px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .track-title {
+    font-size: 20px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 4px;
+  }
+  .track-artist {
+    font-size: 16px;
+    color: #a8b2d1;
+    margin-bottom: 3px;
+  }
+  .track-album {
+    font-size: 13px;
+    color: #6a7494;
+    font-style: italic;
+  }
+  .history {
+    margin-bottom: 24px;
+    text-align: left;
+  }
+  .history-item {
+    background: #0a1e3d;
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .history-item .h-left {
+    flex: 1;
+  }
+  .history-item .h-title {
+    font-size: 14px;
+    color: #8a94b0;
+  }
+  .history-item .h-artist {
+    font-size: 12px;
+    color: #5a6380;
+  }
+  .history-item .h-album {
+    font-size: 11px;
+    color: #444c64;
+    font-style: italic;
+  }
+  .play-btn {
+    width: 70px;
+    height: 70px;
+    border-radius: 50%;
+    border: none;
+    background: #e94560;
+    color: #fff;
+    font-size: 28px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .play-btn:hover {
+    background: #ff6b81;
+    transform: scale(1.05);
+  }
+  .play-btn:active {
+    transform: scale(0.95);
+  }
+  .play-btn.playing {
+    background: #533483;
+  }
+  .status {
+    font-size: 12px;
+    color: #666;
+    margin-top: 15px;
+  }
+  .status.live {
+    color: #4caf50;
+  }
+  .stats-link {
+    display: inline-block;
+    margin-top: 18px;
+    font-size: 13px;
+    color: #a8b2d1;
+    letter-spacing: 1px;
+  }
+  .stats-link:hover {
+    color: #e94560;
+  }
+  .wiki-panel {
+    background: #0f3460;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    text-align: left;
+    overflow: hidden;
+  }
+  .wiki-panel[hidden] { display: none; }
+  .wiki-panel summary {
+    padding: 12px 16px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #e94560;
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    user-select: none;
+  }
+  .wiki-panel summary::-webkit-details-marker { display: none; }
+  .wiki-panel summary::after {
+    content: '+';
+    font-size: 16px;
+    color: #a8b2d1;
+    transition: transform 0.2s;
+  }
+  .wiki-panel[open] summary::after {
+    content: '\2212'; /* minus sign */
+  }
+  .wiki-panel .wiki-subject {
+    color: #fff;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 500;
+    font-size: 13px;
+    margin-left: 8px;
+  }
+  .wiki-content {
+    padding: 0 16px 16px;
+    font-size: 13px;
+    color: #b8c0d8;
+    line-height: 1.5;
+  }
+  .wiki-content.loading { color: #6a7494; font-style: italic; }
+  .wiki-content.error { color: #6a7494; font-style: italic; }
+  .wiki-thumb {
+    float: left;
+    width: 90px;
+    height: auto;
+    margin: 2px 14px 6px 0;
+    border-radius: 4px;
+    background: #16213e;
+  }
+  .wiki-content p {
+    margin: 0 0 8px;
+  }
+  .wiki-content a {
+    color: #e94560;
+    text-decoration: none;
+  }
+  .wiki-content a:hover { text-decoration: underline; }
+  .wiki-more {
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 12px;
+    color: #a8b2d1;
+    clear: both;
+  }
+  .wiki-more:hover { color: #e94560; }
+</style>
+</head>
+<body>
+
+<div class="player">
+  <div class="station-name">{{ station_short_name }}</div>
+  <div class="station-sub">{{ station_tagline }}</div>
+  <div class="show-name" id="show-name"></div>
+  <div class="show-genres" id="show-genres"></div>
+
+  <div class="section-label">Now Playing</div>
+  <div class="track-info">
+    <div class="track-title" id="title">---</div>
+    <div class="track-artist" id="artist">---</div>
+    <div class="track-album" id="album"></div>
+  </div>
+
+  <details class="wiki-panel" id="wiki-panel" hidden>
+    <summary>
+      <span>About <span class="wiki-subject" id="wiki-subject"></span></span>
+    </summary>
+    <div class="wiki-content loading" id="wiki-content">Loading...</div>
+  </details>
+
+  <div class="section-label">Recently Played</div>
+  <div class="history" id="history">
+    <div class="history-item"><div class="h-left"><div class="h-title">---</div></div></div>
+  </div>
+
+  <button class="play-btn" id="playBtn" onclick="togglePlay()">&#9654;</button>
+  <div class="status" id="status">Click to play</div>
+  <a href="/stats/" class="stats-link" target="_blank">Spin Tracker</a>
+  <a href="/schedule.html" class="stats-link" target="_blank">Show Schedule</a>
+</div>
+
+<audio id="audio" preload="none">
+  <source src="/stream" type="audio/mpeg">
+</audio>
+
+<script>
+  const audio = document.getElementById('audio');
+  const btn = document.getElementById('playBtn');
+  const statusEl = document.getElementById('status');
+  let playing = false;
+
+  // --- Wikipedia artist summary panel ---
+  const WIKI_CACHE_PREFIX = 'radio:wiki:';
+  const WIKI_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+  const WIKI_OPEN_STATE_KEY = 'radio:wiki:open';
+  const WIKI_USER_AGENT = '{{ station_user_agent }}';
+  let currentWikiArtist = null;
+  let wikiFetchToken = 0; // guards against out-of-order responses
+  const wikiPanel = document.getElementById('wiki-panel');
+  const wikiSubject = document.getElementById('wiki-subject');
+  const wikiContent = document.getElementById('wiki-content');
+
+  // Restore previous open/closed state
+  try {
+    if (localStorage.getItem(WIKI_OPEN_STATE_KEY) === '1') {
+      wikiPanel.open = true;
+    }
+  } catch (_) {}
+  wikiPanel.addEventListener('toggle', () => {
+    try { localStorage.setItem(WIKI_OPEN_STATE_KEY, wikiPanel.open ? '1' : '0'); } catch (_) {}
+  });
+
+  function wikiCacheGet(artist) {
+    try {
+      const raw = localStorage.getItem(WIKI_CACHE_PREFIX + artist);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (Date.now() - parsed.fetchedAt > WIKI_CACHE_TTL_MS) return null;
+      return parsed.data;
+    } catch (_) { return null; }
+  }
+
+  function wikiCacheSet(artist, data) {
+    try {
+      localStorage.setItem(WIKI_CACHE_PREFIX + artist, JSON.stringify({
+        fetchedAt: Date.now(),
+        data: data
+      }));
+    } catch (_) {}
+  }
+
+  function renderWiki(data) {
+    if (!data || data.status === 'missing') {
+      wikiContent.className = 'wiki-content error';
+      wikiContent.textContent = 'No Wikipedia article found.';
+      return;
+    }
+    const thumb = data.thumbnail
+      ? '<img class="wiki-thumb" src="' + data.thumbnail + '" alt="">'
+      : '';
+    const extract = data.extract_html || ('<p>' + (data.extract || '') + '</p>');
+    const more = data.url
+      ? '<a class="wiki-more" href="' + data.url + '" target="_blank" rel="noopener">Read more on Wikipedia →</a>'
+      : '';
+    wikiContent.className = 'wiki-content';
+    wikiContent.innerHTML = thumb + extract + more;
+  }
+
+  function wikiSummaryFetch(title) {
+    const encoded = encodeURIComponent(title.replace(/\s+/g, '_'));
+    return fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encoded + '?redirect=true', {
+      headers: { 'Api-User-Agent': WIKI_USER_AGENT },
+      credentials: 'omit'
+    }).then(r => {
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    });
+  }
+
+  function wikiOpenSearch(query) {
+    const params = new URLSearchParams({
+      action: 'opensearch',
+      search: query,
+      limit: '1',
+      namespace: '0',
+      format: 'json',
+      origin: '*'
+    });
+    return fetch('https://en.wikipedia.org/w/api.php?' + params.toString(), {
+      headers: { 'Api-User-Agent': WIKI_USER_AGENT },
+      credentials: 'omit'
+    }).then(r => r.ok ? r.json() : null).then(json => {
+      if (!json || !Array.isArray(json) || !json[1] || !json[1][0]) return null;
+      return json[1][0]; // best title match
+    });
+  }
+
+  function normalizeSummary(data) {
+    if (!data || !data.extract) return { status: 'missing' };
+    return {
+      status: 'ok',
+      extract: data.extract,
+      extract_html: data.extract_html,
+      thumbnail: data.thumbnail ? data.thumbnail.source : null,
+      url: data.content_urls && data.content_urls.desktop ? data.content_urls.desktop.page : null
+    };
+  }
+
+  function loadWikiFor(artist) {
+    if (!artist || artist === '---') {
+      wikiPanel.hidden = true;
+      currentWikiArtist = null;
+      return;
+    }
+    if (artist === currentWikiArtist) return;
+    currentWikiArtist = artist;
+    wikiPanel.hidden = false;
+    wikiSubject.textContent = artist;
+
+    const cached = wikiCacheGet(artist);
+    if (cached) {
+      renderWiki(cached);
+      return;
+    }
+
+    wikiContent.className = 'wiki-content loading';
+    wikiContent.textContent = 'Loading...';
+
+    const myToken = ++wikiFetchToken;
+
+    wikiSummaryFetch(artist).then(data => {
+      // If it's a disambiguation or no extract, try fallback with "band" hint
+      if (!data || data.type === 'disambiguation' || !data.extract) {
+        return wikiOpenSearch(artist + ' band').then(title => {
+          if (!title) return null;
+          if (title.toLowerCase() === artist.toLowerCase()) return null; // already tried
+          return wikiSummaryFetch(title);
+        });
+      }
+      return data;
+    }).then(data => {
+      if (myToken !== wikiFetchToken) return; // stale, artist changed again
+      const normalized = normalizeSummary(data);
+      wikiCacheSet(artist, normalized);
+      renderWiki(normalized);
+    }).catch(() => {
+      if (myToken !== wikiFetchToken) return;
+      wikiContent.className = 'wiki-content error';
+      wikiContent.textContent = 'Unable to load from Wikipedia.';
+    });
+  }
+
+  function togglePlay() {
+    if (playing) {
+      audio.pause();
+      audio.src = '';
+      btn.innerHTML = '&#9654;';
+      btn.classList.remove('playing');
+      statusEl.textContent = 'Stopped';
+      statusEl.classList.remove('live');
+      playing = false;
+    } else {
+      audio.src = '/stream';
+      audio.play().then(() => {
+        btn.innerHTML = '&#9724;';
+        btn.classList.add('playing');
+        statusEl.textContent = 'Live';
+        statusEl.classList.add('live');
+        playing = true;
+      }).catch(() => {
+        statusEl.textContent = 'Unable to play';
+      });
+    }
+  }
+
+  function updateNowPlaying() {
+    fetch('/now_playing.json?_=' + Date.now())
+      .then(r => r.json())
+      .then(data => {
+        document.getElementById('title').textContent = data.title || '---';
+        document.getElementById('artist').textContent = data.artist || '---';
+        document.getElementById('album').textContent = data.album || '';
+        var showGenres = {
+          'Loud and Clear': 'Rock \u2022 Hard Rock \u2022 Grunge \u2022 Alternative',
+          'Bass Drop': 'Dubstep \u2022 Bass Music',
+          'Backroads': 'Country \u2022 World',
+          'The Hook': 'Pop',
+          'Soul Kitchen': 'Jazz \u2022 Blues \u2022 Funk \u2022 R&B/Soul',
+          'The Cypher': 'Hip-Hop',
+          'Roots and Routes': 'Reggae \u2022 Folk',
+          'The Pit': 'Metal',
+          'No Rules': 'Punk',
+          'Signal and Noise': 'Electronic \u2022 Trip-Hop',
+          'Quiet Hours': 'Classical \u2022 New Age \u2022 Soundtrack \u2022 Lounge',
+          'The Industrial Complex': 'Industrial',
+          'The Laugh Track': 'Comedy'
+        };
+        document.getElementById('show-name').textContent = data.show || '';
+        document.getElementById('show-genres').textContent = showGenres[data.show] || '';
+
+        // History (most recent first)
+        const histEl = document.getElementById('history');
+        if (data.history && data.history.length > 0) {
+          histEl.innerHTML = data.history.map(h =>
+            '<div class="history-item"><div class="h-left">' +
+            '<div class="h-title">' + (h.title || '---') + '</div>' +
+            '<div class="h-artist">' + (h.artist || '') + '</div>' +
+            '<div class="h-album">' + (h.album || '') + '</div>' +
+            '</div></div>'
+          ).join('');
+        }
+      })
+      .catch(() => {
+        // Fallback to Icecast status
+        fetch('/status-json.xsl')
+          .then(r => r.json())
+          .then(data => {
+            const src = data.icestats.source;
+            if (src && src.title) {
+              const parts = src.title.split(' - ');
+              document.getElementById('artist').textContent = parts[0] || '---';
+              document.getElementById('title').textContent = parts.slice(1).join(' - ') || src.title;
+              document.getElementById('album').textContent = '';
+            }
+          })
+          .catch(() => {});
+      });
+  }
+
+  // --- MediaSession API for Bluetooth/lock screen metadata ---
+  function updateMediaSession(title, artist, album) {
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: title || '{{ station_name }}',
+        artist: artist || '{{ station_tagline }}',
+        album: album || '',
+        artwork: [
+          { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/icon-512.png', sizes: '512x512', type: 'image/png' }
+        ]
+      });
+      navigator.mediaSession.setActionHandler('play', function() { togglePlay(); });
+      navigator.mediaSession.setActionHandler('pause', function() { togglePlay(); });
+    }
+  }
+
+  // Update the original updateNowPlaying to also set MediaSession
+  var _origUpdate = updateNowPlaying;
+  updateNowPlaying = function() {
+    fetch('/now_playing.json?_=' + Date.now())
+      .then(r => r.json())
+      .then(data => {
+        document.getElementById('title').textContent = data.title || '---';
+        document.getElementById('artist').textContent = data.artist || '---';
+        document.getElementById('album').textContent = data.album || '';
+        var showGenres = {
+          'Loud and Clear': 'Rock \u2022 Hard Rock \u2022 Grunge \u2022 Alternative',
+          'Bass Drop': 'Dubstep \u2022 Bass Music',
+          'Backroads': 'Country \u2022 World',
+          'The Hook': 'Pop',
+          'Soul Kitchen': 'Jazz \u2022 Blues \u2022 Funk \u2022 R&B/Soul',
+          'The Cypher': 'Hip-Hop',
+          'Roots and Routes': 'Reggae \u2022 Folk',
+          'The Pit': 'Metal',
+          'No Rules': 'Punk',
+          'Signal and Noise': 'Electronic \u2022 Trip-Hop',
+          'Quiet Hours': 'Classical \u2022 New Age \u2022 Soundtrack \u2022 Lounge',
+          'The Industrial Complex': 'Industrial',
+          'The Laugh Track': 'Comedy'
+        };
+        document.getElementById('show-name').textContent = data.show || '';
+        document.getElementById('show-genres').textContent = showGenres[data.show] || '';
+
+        // History
+        const histEl = document.getElementById('history');
+        if (data.history && data.history.length > 0) {
+          histEl.innerHTML = data.history.map(h =>
+            '<div class="history-item"><div class="h-left">' +
+            '<div class="h-title">' + (h.title || '---') + '</div>' +
+            '<div class="h-artist">' + (h.artist || '') + '</div>' +
+            '<div class="h-album">' + (h.album || '') + '</div>' +
+            '</div></div>'
+          ).join('');
+        }
+
+        // Update MediaSession for Bluetooth/lock screen
+        if (playing) {
+          updateMediaSession(data.title, data.artist, data.album);
+        }
+
+        // Update the Wikipedia artist panel
+        loadWikiFor(data.artist);
+      })
+      .catch(() => {
+        fetch('/status-json.xsl')
+          .then(r => r.json())
+          .then(data => {
+            const src = data.icestats.source;
+            if (src && src.title) {
+              const parts = src.title.split(' - ');
+              var a = parts[0] || '---';
+              var t = parts.slice(1).join(' - ') || src.title;
+              document.getElementById('artist').textContent = a;
+              document.getElementById('title').textContent = t;
+              document.getElementById('album').textContent = '';
+              if (playing) { updateMediaSession(t, a, ''); }
+              loadWikiFor(a);
+            }
+          })
+          .catch(() => {});
+      });
+  };
+
+  // Register service worker for PWA
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+
+  updateNowPlaying();
+  setInterval(updateNowPlaying, 10000);
+</script>
+
+</body>
+</html>

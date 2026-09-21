@@ -1,0 +1,3 @@
+---
+# Default region for AWS Secrets Manager
+aws_secret_region: "us-west-2"

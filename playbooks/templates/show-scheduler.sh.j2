@@ -1,0 +1,184 @@
+#!/bin/bash
+# Radio show scheduler
+# Runs via cron every 5 minutes on the radio host
+# Checks the current hour and switches playlists for the active show
+# Managed by Ansible - do not edit manually
+
+SHOW_DIR="/mounts/media/radio-shows"
+LIBRARY="/etc/liquidsoap/library.m3u"
+STATE_DIR="/tmp/radio-dj"
+CURRENT_SHOW_FILE="$STATE_DIR/current_show.txt"
+ANNOUNCE_DIR="$STATE_DIR"
+PIPER=/usr/local/bin/piper-tts
+MODEL=/opt/piper/voices/en_US-ryan-medium.onnx
+STATION="{{ station_tts_name }}"
+DJ_CONFIG="/opt/radio/dj-config.sh"
+
+mkdir -p "$STATE_DIR"
+# liquidsoap writes last_played.txt from inside the streaming loop; make sure
+# the directory is group-writable by the liquidsoap user so a fresh /tmp on
+# reboot doesn't blow up the stream with "Permission denied" runtime errors.
+chgrp liquidsoap "$STATE_DIR" 2>/dev/null || true
+chmod 2775 "$STATE_DIR"
+
+# Source DJ config for per-show voice models
+DJ_NAME=""
+DJ_VOICE=""
+if [ -f "$DJ_CONFIG" ]; then
+    source "$DJ_CONFIG"
+fi
+
+# Get current hour (0-23)
+hour=$(date +%-H)
+
+# Determine active show based on schedule
+show_name=""
+show_file=""
+show_genres=""
+show_duration=""
+
+if [ "$hour" -ge 6 ] && [ "$hour" -lt 9 ]; then
+    show_name="Loud and Clear"
+    show_file="loud_and_clear.m3u"
+    show_genres="rock, hard rock, grunge, and alternative"
+    show_duration="three hours"
+elif [ "$hour" -ge 9 ] && [ "$hour" -lt 10 ]; then
+    show_name="Bass Drop"
+    show_file="bass_drop.m3u"
+    show_genres="dubstep and bass music"
+    show_duration="one hour"
+elif [ "$hour" -ge 10 ] && [ "$hour" -lt 12 ]; then
+    show_name="The Industrial Complex"
+    show_file="the_industrial_complex.m3u"
+    show_genres="industrial"
+    show_duration="two hours"
+elif [ "$hour" -ge 12 ] && [ "$hour" -lt 14 ]; then
+    show_name="The Hook"
+    show_file="the_hook.m3u"
+    show_genres="pop"
+    show_duration="two hours"
+elif [ "$hour" -ge 14 ] && [ "$hour" -lt 16 ]; then
+    show_name="Soul Kitchen"
+    show_file="soul_kitchen.m3u"
+    show_genres="jazz, blues, funk, and R and B"
+    show_duration="two hours"
+elif [ "$hour" -ge 16 ] && [ "$hour" -lt 17 ]; then
+    show_name="The Cypher"
+    show_file="the_cypher.m3u"
+    show_genres="hip-hop"
+    show_duration="one hour"
+elif [ "$hour" -ge 17 ] && [ "$hour" -lt 19 ]; then
+    show_name="Loud and Clear"
+    show_file="loud_and_clear.m3u"
+    show_genres="rock, hard rock, grunge, and alternative"
+    show_duration="two hours"
+elif [ "$hour" -ge 19 ] && [ "$hour" -lt 20 ]; then
+    show_name="Roots and Routes"
+    show_file="roots_and_routes.m3u"
+    show_genres="reggae and folk"
+    show_duration="one hour"
+elif [ "$hour" -ge 20 ] && [ "$hour" -lt 22 ]; then
+    show_name="The Pit"
+    show_file="the_pit.m3u"
+    show_genres="metal"
+    show_duration="two hours"
+elif [ "$hour" -ge 22 ] && [ "$hour" -lt 23 ]; then
+    show_name="No Rules"
+    show_file="no_rules.m3u"
+    show_genres="punk"
+    show_duration="one hour"
+elif [ "$hour" -ge 23 ] || [ "$hour" -lt 1 ]; then
+    show_name="Signal and Noise"
+    show_file="signal_and_noise.m3u"
+    show_genres="electronic and trip-hop"
+    show_duration="two hours"
+elif [ "$hour" -ge 1 ] && [ "$hour" -lt 3 ]; then
+    show_name="Quiet Hours"
+    show_file="quiet_hours.m3u"
+    show_genres="classical, new age, soundtrack, and lounge"
+    show_duration="two hours"
+elif [ "$hour" -ge 3 ] && [ "$hour" -lt 5 ]; then
+    show_name="Backroads"
+    show_file="backroads.m3u"
+    show_genres="country and world music"
+    show_duration="two hours"
+elif [ "$hour" -ge 5 ] && [ "$hour" -lt 6 ]; then
+    show_name="The Laugh Track"
+    show_file="the_laugh_track.m3u"
+    show_genres="comedy"
+    show_duration="one hour"
+fi
+
+# Fallback to default shuffle if no show matched or playlist missing
+if [ -z "$show_file" ] || [ ! -f "$SHOW_DIR/$show_file" ]; then
+    show_name="{{ station_name }}"
+    show_file="default_shuffle.m3u"
+    show_genres=""
+    show_duration=""
+fi
+
+# Check if show has changed
+previous_show=""
+if [ -f "$CURRENT_SHOW_FILE" ]; then
+    previous_show=$(cat "$CURRENT_SHOW_FILE")
+fi
+
+if [ "$previous_show" = "$show_name" ]; then
+    # No change, nothing to do
+    exit 0
+fi
+
+# Show has changed - update playlist
+echo "Show transition: '${previous_show:-none}' -> '$show_name'"
+
+if [ -f "$SHOW_DIR/$show_file" ]; then
+    cp "$SHOW_DIR/$show_file" "$LIBRARY"
+    chown liquidsoap:liquidsoap "$LIBRARY" 2>/dev/null
+    echo "Playlist updated: $show_file ($(wc -l < "$LIBRARY") tracks)"
+    # Force Liquidsoap to reload the playlist immediately
+    { sleep 0.3; echo "music.reload"; sleep 0.3; } | telnet 127.0.0.1 1234 >/dev/null 2>&1
+    echo "Playlist reload triggered"
+else
+    echo "WARNING: Playlist not found: $SHOW_DIR/$show_file"
+    exit 1
+fi
+
+# Update current show state
+echo "$show_name" > "$CURRENT_SHOW_FILE"
+
+# Generate show intro announcement via TTS
+if [ -n "$show_genres" ] && [ -n "$show_duration" ]; then
+    # Get DJ info for this show's voice model
+    get_dj_info "$show_name"
+    if [ -n "$DJ_VOICE" ] && [ -f "$DJ_VOICE" ]; then
+        MODEL="$DJ_VOICE"
+    fi
+
+    if [ -n "$DJ_NAME" ]; then
+        intro_text="Hey, I'm ${DJ_NAME} and you're listening to ${STATION}. Welcome to ${show_name}. For the next ${show_duration}, we'll be playing the best in ${show_genres}."
+    else
+        intro_text="Welcome to ${show_name} on ${STATION}. For the next ${show_duration}, we'll be bringing you the best in ${show_genres}."
+    fi
+
+    ts=$(date +%s%N)
+    wavfile="${ANNOUNCE_DIR}/show_intro_${ts}.wav"
+    mp3file="${ANNOUNCE_DIR}/show_intro_${ts}.mp3"
+
+    echo "$intro_text" | "$PIPER" --model "$MODEL" --output_file "$wavfile" >/dev/null 2>&1
+
+    if [ -f "$wavfile" ]; then
+        ffmpeg -y -i "$wavfile" -ar 44100 -ac 2 -b:a 128k "$mp3file" 2>/dev/null
+        rm -f "$wavfile"
+
+        if [ -f "$mp3file" ]; then
+            # Write intro path to pending file - on_end callback will push it after first new track
+            echo "$mp3file" > "$STATE_DIR/pending_intro.txt"
+            echo "Show intro prepared: $mp3file (will play after first track of new show)"
+        fi
+    fi
+fi
+
+# Clean up old show intro files (older than 1 hour)
+find "$ANNOUNCE_DIR" -name "show_intro_*" -mmin +60 -delete 2>/dev/null
+
+echo "Show scheduler complete: $show_name"

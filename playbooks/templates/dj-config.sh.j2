@@ -1,0 +1,72 @@
+#!/bin/bash
+# Radio DJ configuration
+# Maps show names to DJ personas and Piper TTS voice models
+# Sourced by dj-announce.sh and show-scheduler.sh
+# Managed by Ansible - do not edit manually
+
+VOICES_DIR="/opt/piper/voices"
+
+# Get DJ info for a given show
+# Sets DJ_NAME and DJ_VOICE variables
+get_dj_info() {
+    local show="$1"
+    case "$show" in
+        "Loud and Clear")
+            DJ_NAME="Ryan Cross"
+            DJ_VOICE="${VOICES_DIR}/en_US-ryan-medium.onnx"
+            ;;
+        "Backroads")
+            DJ_NAME="John Wilder"
+            DJ_VOICE="${VOICES_DIR}/en_US-john-medium.onnx"
+            ;;
+        "The Hook")
+            DJ_NAME="Amy Sinclair"
+            DJ_VOICE="${VOICES_DIR}/en_US-amy-medium.onnx"
+            ;;
+        "Soul Kitchen")
+            DJ_NAME="Joe Valentino"
+            DJ_VOICE="${VOICES_DIR}/en_US-joe-medium.onnx"
+            ;;
+        "The Cypher")
+            DJ_NAME="Danny Blaze"
+            DJ_VOICE="${VOICES_DIR}/en_US-danny-low.onnx"
+            ;;
+        "Roots and Routes")
+            DJ_NAME="Kathleen Rivers"
+            DJ_VOICE="${VOICES_DIR}/en_US-kathleen-low.onnx"
+            ;;
+        "The Pit")
+            DJ_NAME="Bryce Hammett"
+            DJ_VOICE="${VOICES_DIR}/en_US-bryce-medium.onnx"
+            ;;
+        "No Rules")
+            DJ_NAME="Sam Vicious"
+            DJ_VOICE="${VOICES_DIR}/en_US-sam-medium.onnx"
+            ;;
+        "Signal and Noise")
+            DJ_NAME="Kristin Volt"
+            DJ_VOICE="${VOICES_DIR}/en_US-kristin-medium.onnx"
+            ;;
+        "Quiet Hours")
+            DJ_NAME="Lessac Monroe"
+            DJ_VOICE="${VOICES_DIR}/en_US-lessac-medium.onnx"
+            ;;
+        "The Industrial Complex")
+            DJ_NAME="Norman Gears"
+            DJ_VOICE="${VOICES_DIR}/en_US-norman-medium.onnx"
+            ;;
+        "The Laugh Track")
+            DJ_NAME="Hank Miller"
+            DJ_VOICE="${VOICES_DIR}/en_US-hfc_male-medium.onnx"
+            ;;
+        "Bass Drop")
+            DJ_NAME="Iggy Stevenson"
+            DJ_VOICE="${VOICES_DIR}/en_US-l2arctic-medium.onnx"
+            ;;
+        *)
+            # Default fallback
+            DJ_NAME="Ryan Cross"
+            DJ_VOICE="${VOICES_DIR}/en_US-ryan-medium.onnx"
+            ;;
+    esac
+}
